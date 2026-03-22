@@ -12,6 +12,11 @@ When a second brain has multiple ingestion paths (MCP capture, REST API, documen
 
 The structured capture parser adds a bonus: users can supply type and topic hints inline with their input using a simple bracket syntax, giving them control over classification without requiring a separate UI.
 
+## Prerequisites
+
+- Working Open Brain setup ([guide](../../docs/01-getting-started.md))
+- TypeScript/Deno environment for using the helper functions
+
 ## How It Works
 
 ### Structured Capture Parser
@@ -156,10 +161,10 @@ Solution: This primitive does not compute fingerprints — it only includes them
 
 ## Extensions That Use This
 
-- [Smart Ingest](../../integrations/smart-ingest/) — uses `prepareThoughtPayload` to normalize extracted thoughts before writing
+- Smart Ingest (see `integrations/smart-ingest` contribution) — uses `prepareThoughtPayload` to normalize extracted thoughts before writing
 - Any MCP capture tool or REST endpoint that creates thoughts can adopt this primitive
 
 ## Further Reading
 
 - [Content Fingerprint Dedup](../content-fingerprint-dedup/) — companion primitive for deduplication
-- [Ingestion Jobs Schema](../../schemas/ingestion-jobs/) — database schema for tracking extraction lifecycle
+- Ingestion Jobs Schema (see `schemas/ingestion-jobs` contribution) — database schema for tracking extraction lifecycle
