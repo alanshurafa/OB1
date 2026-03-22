@@ -70,7 +70,7 @@ SUPABASE (from your Open Brain setup)
 
 Appends a corroborating evidence entry to `metadata.evidence[]` on an existing thought. Idempotent via SHA-256 identity of the source label, excerpt, and thought ID combined. Safe to call multiple times with the same input.
 
-## Steps
+## Step-by-step instructions
 
 **1. Open the Supabase SQL Editor**
 
