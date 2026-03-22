@@ -72,49 +72,43 @@ Appends a corroborating evidence entry to `metadata.evidence[]` on an existing t
 
 ## Step-by-step instructions
 
-**1. Open the Supabase SQL Editor**
+1. Open your Supabase Dashboard → SQL Editor → New query.
 
-Go to your Supabase Dashboard → SQL Editor → New query.
+2. Copy the contents of [`migration.sql`](./migration.sql) and execute it in the SQL Editor.
 
-**2. Run the migration**
+3. Verify the tables exist by running this query:
 
-Copy the contents of [`migration.sql`](./migration.sql) and execute it in the SQL Editor.
+   ```sql
+   select table_name from information_schema.tables
+   where table_schema = 'public'
+     and table_name in ('ingestion_jobs', 'ingestion_items');
+   ```
 
-**3. Verify the tables exist**
+   You should see both tables listed.
 
-Run this query to confirm:
+4. Verify the RPC exists:
 
-```sql
-select table_name from information_schema.tables
-where table_schema = 'public'
-  and table_name in ('ingestion_jobs', 'ingestion_items');
-```
+   ```sql
+   select routine_name from information_schema.routines
+   where routine_schema = 'public'
+     and routine_name = 'append_thought_evidence';
+   ```
 
-You should see both tables listed.
+5. Test with a sample job:
 
-**4. Verify the RPC exists**
+   ```sql
+   -- Create a test job
+   insert into public.ingestion_jobs (input_hash, source_label, status)
+   values ('test-hash-123', 'test document', 'pending')
+   returning id;
 
-```sql
-select routine_name from information_schema.routines
-where routine_schema = 'public'
-  and routine_name = 'append_thought_evidence';
-```
+   -- Create a test item (use the job id from above)
+   insert into public.ingestion_items (job_id, extracted_content, action, status, reason)
+   values ('<job-id>', 'Test thought content', 'add', 'ready', 'no_semantic_match');
 
-**5. Test with a sample job**
-
-```sql
--- Create a test job
-insert into public.ingestion_jobs (input_hash, source_label, status)
-values ('test-hash-123', 'test document', 'pending')
-returning id;
-
--- Create a test item (use the job id from above)
-insert into public.ingestion_items (job_id, extracted_content, action, status, reason)
-values ('<job-id>', 'Test thought content', 'add', 'ready', 'no_semantic_match');
-
--- Clean up
-delete from public.ingestion_jobs where input_hash = 'test-hash-123';
-```
+   -- Clean up
+   delete from public.ingestion_jobs where input_hash = 'test-hash-123';
+   ```
 
 ## Expected Outcome
 
