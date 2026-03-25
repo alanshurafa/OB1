@@ -12,6 +12,11 @@ Without dedup, bulk imports create duplicates. If you import the same ChatGPT ex
 
 Content fingerprint dedup solves all of that at the database level. Re-running any import produces zero new rows for content that already exists.
 
+## Prerequisites
+
+- Working Open Brain setup ([guide](../../docs/01-getting-started.md))
+- The `thoughts` table must already exist
+
 ## How It Works
 
 The dedup chain has three parts:
