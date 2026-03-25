@@ -1,7 +1,7 @@
 {
   "name": "Universal Ingest Primitives",
   "description": "Shared structured capture parsing and thought payload preparation contract for consistent ingestion across all capture paths.",
-  "category": "primitives",
+  "category": "recipes",
   "author": {
     "name": "Alan Shurafa",
     "github": "alanshurafa"

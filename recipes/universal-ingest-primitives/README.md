@@ -8,7 +8,7 @@ A pair of reusable TypeScript functions that normalize raw user input into a con
 
 ## Why It Matters
 
-When a second brain has multiple ingestion paths (MCP capture, REST API, document extraction, Telegram webhook), each path tends to develop its own inline heuristics for resolving thought type, importance, and metadata. Over time these diverge, producing inconsistent data quality. This primitive provides one shared contract so every path produces identically shaped payloads.
+When a second brain has multiple ingestion paths (MCP capture, REST API, document extraction, Telegram webhook), each path tends to develop its own inline heuristics for resolving thought type, importance, and metadata. Over time these diverge, producing inconsistent data quality. This recipe provides one shared contract so every path produces identically shaped payloads.
 
 The structured capture parser adds a bonus: users can supply type and topic hints inline with their input using a simple bracket syntax, giving them control over classification without requiring a separate UI.
 
@@ -157,14 +157,14 @@ Solution: The bracket syntax requires both type and topic brackets: `[type] [top
 Solution: Check the precedence order. If your caller override is empty and there's no structured hint, the default is "idea". Pass the type explicitly in `opts.metadata.type` or `opts.extracted.type`.
 
 **Issue: Content fingerprint is empty in the payload**
-Solution: This primitive does not compute fingerprints — it only includes them if you pass `opts.content_fingerprint`. Use the [Content Fingerprint Dedup](../content-fingerprint-dedup/) primitive to compute fingerprints before calling `prepareThoughtPayload`.
+Solution: This recipe does not compute fingerprints — it only includes them if you pass `opts.content_fingerprint`. Use the [Content Fingerprint Dedup](../../primitives/content-fingerprint-dedup/) primitive to compute fingerprints before calling `prepareThoughtPayload`.
 
-## Extensions That Use This
+## Works Well With
 
 - Smart Ingest (see `integrations/smart-ingest` contribution) — uses `prepareThoughtPayload` to normalize extracted thoughts before writing
-- Any MCP capture tool or REST endpoint that creates thoughts can adopt this primitive
+- Any MCP capture tool or REST endpoint that creates thoughts can adopt these helpers
 
 ## Further Reading
 
-- [Content Fingerprint Dedup](../content-fingerprint-dedup/) — companion primitive for deduplication
+- [Content Fingerprint Dedup](../../primitives/content-fingerprint-dedup/) — companion primitive for deduplication
 - Ingestion Jobs Schema (see `schemas/ingestion-jobs` contribution) — database schema for tracking extraction lifecycle
