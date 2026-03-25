@@ -88,3 +88,38 @@ export function detectSensitivity(
 
   return { tier: "standard", reasons: [] };
 }
+
+/** Ordered sensitivity tiers — index 0 is least restrictive. */
+const SENSITIVITY_TIERS: readonly SensitivityTier[] = [
+  "standard",
+  "personal",
+  "restricted",
+];
+
+/**
+ * Resolve sensitivity tier with escalation-only semantics.
+ * Can only escalate (standard → personal → restricted), never downgrade.
+ * Unrecognized values normalize to "personal" (safe default).
+ *
+ * Use this when accepting caller-provided overrides to prevent accidental
+ * downgrade of a detected tier.
+ */
+export function resolveSensitivityTier(
+  detected: SensitivityTier,
+  override?: string,
+): SensitivityTier {
+  if (!override) return detected;
+
+  const normalized = override.trim().toLowerCase();
+  const overrideIndex = (SENSITIVITY_TIERS as readonly string[]).indexOf(normalized);
+  const detectedIndex = SENSITIVITY_TIERS.indexOf(detected);
+
+  if (overrideIndex < 0) {
+    // Unrecognized value → normalize to "personal" (safe default)
+    const personalIndex = SENSITIVITY_TIERS.indexOf("personal");
+    return SENSITIVITY_TIERS[Math.max(detectedIndex, personalIndex)];
+  }
+
+  // Only escalate, never downgrade
+  return SENSITIVITY_TIERS[Math.max(detectedIndex, overrideIndex)];
+}

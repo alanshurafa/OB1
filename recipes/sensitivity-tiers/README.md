@@ -83,6 +83,22 @@ const patterns = compilePatterns(patternsJson);
 const result = detectSensitivity(thoughtContent, patterns);
 ```
 
+### Escalation-Only Semantics
+
+Sensitivity tiers can only be **escalated**, never downgraded. If a thought is already classified as `restricted`, no override can lower it to `personal` or `standard`. This prevents accidental exposure of sensitive content.
+
+Use `resolveSensitivityTier()` when accepting caller-provided overrides:
+
+```typescript
+import { detectSensitivity, resolveSensitivityTier, compilePatterns } from "./detect-sensitivity.ts";
+
+const detected = detectSensitivity(content, patterns);
+const finalTier = resolveSensitivityTier(detected.tier, callerOverride);
+// If detected="restricted" and override="standard", finalTier="restricted" (no downgrade)
+// If detected="standard" and override="personal", finalTier="personal" (escalation allowed)
+// Unrecognized override values normalize to "personal" (safe default)
+```
+
 ### Step 3: Backfill existing thoughts (optional)
 
 To classify thoughts already in your database, run a backfill script that:
