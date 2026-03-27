@@ -107,12 +107,12 @@ Copy and run the contents of [`sql/05-text-search-index.sql`](sql/05-text-search
 **1. Create the function directory in your Supabase project:**
 
 ```bash
-mkdir -p supabase/functions/open-brain-rest/utils
+mkdir -p function/utils
 ```
 
 **2. Copy the function files from this integration into your project:**
 
-Copy the contents of `supabase/functions/open-brain-rest/` from this integration folder into your project's `supabase/functions/open-brain-rest/` directory. You need:
+Copy the contents of `function/` from this integration folder into your project's `function/` directory. You need:
 - `index.ts`
 - `utils/open-brain-utils.ts`
 - `utils/ingest-config.ts`
