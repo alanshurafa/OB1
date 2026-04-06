@@ -45,10 +45,12 @@ SUPABASE (from your Open Brain setup)
 5. Navigate to **Database > Functions** and verify the `queue_entity_extraction` function exists
 6. Navigate to **Database > Triggers** on the `thoughts` table and verify `trg_queue_entity_extraction` is attached
 7. Test the trigger by capturing a new thought (via the MCP server or direct insert) and checking the queue:
+
    ```sql
    SELECT count(*) FROM entity_extraction_queue WHERE status = 'pending';
    -- Should return at least 1 after capturing a thought
    ```
+
 8. *(Optional — existing brains only)* To backfill the extraction queue with pre-existing thoughts, uncomment and run the backfill section at the bottom of `schema.sql`
 
 ## Expected Outcome
