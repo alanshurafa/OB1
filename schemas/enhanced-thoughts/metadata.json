@@ -1,0 +1,20 @@
+{
+  "name": "Enhanced Thoughts Columns and Utility RPCs",
+  "description": "Adds classification columns (type, sensitivity, importance, quality, source), full-text search with boolean operators, aggregate statistics, and thought-connection discovery to the core thoughts table.",
+  "category": "schemas",
+  "author": {
+    "name": "Alan Shurafa",
+    "github": "alanshurafa"
+  },
+  "version": "1.0.0",
+  "requires": {
+    "open_brain": true,
+    "services": [],
+    "tools": []
+  },
+  "tags": ["schema", "metadata", "search", "statistics", "enrichment"],
+  "difficulty": "beginner",
+  "estimated_time": "15 minutes",
+  "created": "2026-04-06",
+  "updated": "2026-04-06"
+}
