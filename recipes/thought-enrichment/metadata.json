@@ -1,0 +1,20 @@
+{
+  "name": "Thought Enrichment Pipeline",
+  "description": "Retroactively classifies and enriches thoughts with type, summary, topics, tags, people, action items, confidence, and importance using LLM providers (OpenRouter or Anthropic API).",
+  "category": "recipes",
+  "author": {
+    "name": "Alan Shurafa",
+    "github": "alanshurafa"
+  },
+  "version": "1.0.0",
+  "requires": {
+    "open_brain": true,
+    "services": ["OpenRouter API", "Supabase"],
+    "tools": ["Node.js 18+"]
+  },
+  "tags": ["enrichment", "classification", "backfill", "metadata", "llm", "openrouter"],
+  "difficulty": "intermediate",
+  "estimated_time": "30 minutes",
+  "created": "2026-04-06",
+  "updated": "2026-04-06"
+}
