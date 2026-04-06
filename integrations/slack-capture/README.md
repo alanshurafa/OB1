@@ -240,6 +240,8 @@ Replace the values with:
 
 > SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are automatically available inside Edge Functions — you don't need to set them.
 
+<!-- -->
+
 > **If you ever rotate your OpenRouter key:** you must re-run `supabase secrets set OPENROUTER_API_KEY=...` with the new key. This Edge Function reads the key from Supabase secrets at runtime — updating it on openrouter.ai alone won't propagate here. See the [FAQ on key rotation](../../docs/03-faq.md#api-key-rotation) for the full checklist.
 
 ### Deploy
@@ -341,6 +343,8 @@ That's normal — the LLM is making its best guess with limited context. The met
 You now have a Slack channel that acts as a direct write path into your Open Brain. Type anything — meeting notes, random ideas, observations, reminders — and it's automatically embedded, classified, and searchable from any AI tool connected to your MCP server.
 
 This is one of many possible capture interfaces. Your Open Brain MCP server also includes a `capture_thought` tool, which means any MCP-connected AI (Claude Desktop, ChatGPT, Claude Code, Cursor) can write directly to your brain without switching apps. Slack is just the dedicated inbox.
+
+Before adding more MCP-powered capture paths, review the [MCP Tool Audit & Optimization Guide](../../docs/05-tool-audit.md) so your tool surface stays intentional and manageable.
 
 ---
 

@@ -239,9 +239,7 @@ You'll land on the **"Publishable and secret API keys"** tab. Copy these into yo
 - 🔖 **Secret key** — Scroll down to the **"Secret keys"** section on the same page. You'll see a `default` key. Click the copy button to copy it. (You can also click **"+ New secret key"** to create a dedicated one named `open-brain` — this makes it easier to revoke later without affecting other services, but using the default is fine too.)
 
 > [!WARNING]
-> Treat the Secret key like a password. Anyone with it has full access to your data. The "Publishable key" at the top of the page is safe to expose publicly — you don't need it for this setup.
->
-> You may also see a **"Legacy anon, service_role API keys"** tab — those are the old-style JWT keys. You don't need them. Everything in this guide uses the new key format.
+> Treat the Secret key like a password. Anyone with it has full access to your data. The "Publishable key" at the top of the page is safe to expose publicly — you don't need it for this setup. You may also see a **"Legacy anon, service_role API keys"** tab — those are the old-style JWT keys. You don't need them. Everything in this guide uses the new key format.
 
 ✅ **Done when:** Your credential tracker has both **Project URL** and **Secret key** filled in.
 
@@ -288,6 +286,8 @@ Copy the output — it'll look something like `a3f8b2c1d4e5...` (64 characters).
 
 > [!WARNING]
 > Copy and paste the command for **your operating system only**. The Mac command won't work on Windows and vice versa.
+
+<!-- -->
 
 > [!IMPORTANT]
 > This is your **one access key for all of Open Brain** — core setup and every extension you add later. Save it somewhere permanent. Never generate a new one unless you want to replace it for ALL deployed functions.
@@ -419,9 +419,12 @@ supabase secrets set OPENROUTER_API_KEY=your-openrouter-key-here
 > [!CAUTION]
 > Make sure the access key you set here **exactly matches** what you saved in your credential tracker. If they don't match, you'll get 401 errors when connecting your AI.
 
+<!-- -->
+
 > **If you ever rotate your OpenRouter key:** you must re-run the `supabase secrets set` command above with the new key, AND update any local `.env` files that reference it. The edge function reads from Supabase secrets at runtime — updating the key on openrouter.ai alone won't propagate here. See the [FAQ on key rotation](03-faq.md#api-key-rotation) for the full checklist.
 
 ### Create the Function
+
 ![6.6](https://img.shields.io/badge/6.6-Download_the_Server_Files-555?style=for-the-badge&labelColor=1E88E5)
 
 Three commands, run them one at a time in order:

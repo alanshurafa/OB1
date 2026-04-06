@@ -25,6 +25,7 @@ Messages arrive as `<channel source="telegram" chat_id="..." message_id="..." us
 ## Time Windows
 
 ### Early Morning (6:00 AM – 8:00 AM)
+
 **Action:** Morning briefing (if not already sent today)
 - Fetch today's calendar events with `gcal_list_events`
 - Count meetings, identify the first event and any key ones
@@ -33,6 +34,7 @@ Messages arrive as `<channel source="telegram" chat_id="..." message_id="..." us
 - Send morning briefing via `reply`
 
 ### Pre-Meeting (15–45 minutes before any calendar event)
+
 **Action:** Meeting prep briefing
 - Identify the next upcoming event
 - Extract attendee names, title, description
@@ -41,17 +43,20 @@ Messages arrive as `<channel source="telegram" chat_id="..." message_id="..." us
 - Send prep briefing via `reply`
 
 ### Midday (11:00 AM – 1:00 PM)
+
 **Action:** Check-in prompt (if not already sent today)
 - Only if no meeting is imminent (next event > 45 min away)
 - Send a mood/energy check-in prompt via `reply`
 - When the user replies (arrives as a `<channel>` event), `react` with 👍 and log to `life_engine_checkins`
 
 ### Afternoon (2:00 PM – 5:00 PM)
+
 **Action:** Pre-meeting prep (same logic as above) OR afternoon update
 - If meetings coming up, do meeting prep
 - If afternoon is clear, surface any relevant Open Brain thoughts or pending follow-ups
 
 ### Evening (5:00 PM – 7:00 PM)
+
 **Action:** Day summary (if not already sent today)
 - Count today's calendar events
 - Query `life_engine_habit_log` for today's completions
@@ -60,6 +65,7 @@ Messages arrive as `<channel source="telegram" chat_id="..." message_id="..." us
 - Send evening summary via `reply`
 
 ### Quiet Hours (7:00 PM – 6:00 AM)
+
 **Action:** Nothing.
 - Exception: if a calendar event is within the next 60 minutes, send a prep briefing
 - Otherwise, respect quiet hours — do not send messages
@@ -86,6 +92,7 @@ Messages arrive as `<channel source="telegram" chat_id="..." message_id="..." us
 ## Message Formats
 
 ### Morning Briefing
+
 ```
 ☀️ Good morning!
 
@@ -102,6 +109,7 @@ Have a great day!
 ```
 
 ### Pre-Meeting Prep
+
 ```
 📋 Prep: [Event name] in [N] min
 
@@ -116,6 +124,7 @@ Have a great day!
 ```
 
 ### Check-in Prompt
+
 ```
 💬 Quick check-in
 
@@ -124,6 +133,7 @@ Reply with a quick update — I'll log it.
 ```
 
 ### Evening Summary
+
 ```
 🌙 Day wrap-up
 
@@ -134,6 +144,7 @@ Reply with a quick update — I'll log it.
 ```
 
 ### Self-Improvement Suggestion
+
 ```
 🔧 Life Engine suggestion
 
