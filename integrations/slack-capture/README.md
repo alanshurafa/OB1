@@ -344,6 +344,8 @@ You now have a Slack channel that acts as a direct write path into your Open Bra
 
 This is one of many possible capture interfaces. Your Open Brain MCP server also includes a `capture_thought` tool, which means any MCP-connected AI (Claude Desktop, ChatGPT, Claude Code, Cursor) can write directly to your brain without switching apps. Slack is just the dedicated inbox.
 
+Before adding more MCP-powered capture paths, review the [MCP Tool Audit & Optimization Guide](../../docs/05-tool-audit.md) so your tool surface stays intentional and manageable.
+
 ---
 
 *Built by Nate B. Jones — part of the [Open Brain project](https://github.com/NateBJones-Projects/OB1)*
