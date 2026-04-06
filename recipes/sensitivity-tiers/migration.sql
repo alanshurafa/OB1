@@ -14,7 +14,10 @@ ADD COLUMN IF NOT EXISTS sensitivity_tier TEXT NOT NULL DEFAULT 'standard';
 CREATE INDEX IF NOT EXISTS idx_thoughts_sensitivity_tier
 ON thoughts (sensitivity_tier);
 
--- Optional: Add a check constraint to enforce valid values
-ALTER TABLE thoughts
-ADD CONSTRAINT chk_sensitivity_tier
-CHECK (sensitivity_tier IN ('standard', 'personal', 'restricted'));
+-- Optional: Add a check constraint to enforce valid values (idempotent)
+DO $$ BEGIN
+  ALTER TABLE thoughts
+  ADD CONSTRAINT chk_sensitivity_tier
+  CHECK (sensitivity_tier IN ('standard', 'personal', 'restricted'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;

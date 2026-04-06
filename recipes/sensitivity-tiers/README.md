@@ -138,7 +138,23 @@ SELECT * FROM thoughts WHERE sensitivity_tier != 'restricted';
 SELECT * FROM thoughts;
 ```
 
-If using the REST API or MCP tools, pass `exclude_restricted=true` as a query parameter.
+### Filtering in MCP tools
+
+The core `match_thoughts` RPC returns `sensitivity_tier` but does **not** filter by it at the database level. Filtering must be done in your MCP server layer after the query:
+
+```typescript
+// In your MCP search_thoughts handler, after calling match_thoughts:
+const results = data.filter(r => r.sensitivity_tier !== 'restricted');
+```
+
+If your setup includes the `search_thoughts_text` RPC, it supports `exclude_restricted` in the filter parameter at the data layer:
+
+```typescript
+const { data } = await supabase.rpc('search_thoughts_text', {
+  p_query: query,
+  p_filter: { exclude_restricted: true },
+});
+```
 
 ## Expected Outcome
 
