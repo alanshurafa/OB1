@@ -45,6 +45,7 @@ begin
 end;
 $$ language plpgsql;
 
+drop trigger if exists reflections_set_updated_at on public.reflections;
 create trigger reflections_set_updated_at
   before update on public.reflections
   for each row
@@ -81,10 +82,10 @@ begin
     on conflict (id) do update set
       thought_id      = coalesce(excluded.thought_id, reflections.thought_id),
       trigger_context = coalesce(excluded.trigger_context, reflections.trigger_context),
-      options         = excluded.options,
-      factors         = excluded.factors,
+      options         = case when excluded.options = '[]'::jsonb then reflections.options else excluded.options end,
+      factors         = case when excluded.factors = '[]'::jsonb then reflections.factors else excluded.factors end,
       conclusion      = coalesce(excluded.conclusion, reflections.conclusion),
-      confidence      = excluded.confidence,
+      confidence      = coalesce(excluded.confidence, reflections.confidence),
       reflection_type = coalesce(excluded.reflection_type, reflections.reflection_type),
       embedding       = coalesce(excluded.embedding, reflections.embedding),
       metadata        = reflections.metadata || excluded.metadata
