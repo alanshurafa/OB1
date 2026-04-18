@@ -247,15 +247,21 @@ async function fetchThoughts(cfg, { windowDays, includePersonal, noSensitivityFi
   // column won't trip the 400. Otherwise, apply the exclusion filter.
   //
   // NOTE on importance: stock OB1 `public.thoughts` does NOT have an
-  // `importance` column. This recipe reads it from `metadata->>'importance'`
-  // on the client side (see `thoughtImportance()` below), so we do not select
-  // a bare `importance` column here. Installs that do add a native
-  // `importance` column can expose it via `metadata.importance` in their
-  // capture pipeline, or future work can add a COALESCE path that prefers
-  // the native column when present.
-  const selectCols = noSensitivityFilter
-    ? "id,content,created_at,metadata"
-    : "id,content,created_at,metadata,sensitivity_tier";
+  // `importance` column, but enhanced-schema installs DO. We optimistically
+  // include `importance` in the select and, if PostgREST 400s with "column
+  // does not exist", transparently retry without it and memoize the result
+  // on the cfg object so subsequent pages skip the probe. This lets
+  // `thoughtImportance()` honor a real native column when present and fall
+  // back to `metadata.importance` on stock OB1. See the column-probe block
+  // in the fetch loop for the retry logic.
+  const buildSelect = (withImportance) =>
+    withImportance
+      ? (noSensitivityFilter
+          ? "id,content,created_at,metadata,importance"
+          : "id,content,created_at,metadata,sensitivity_tier,importance")
+      : (noSensitivityFilter
+          ? "id,content,created_at,metadata"
+          : "id,content,created_at,metadata,sensitivity_tier");
   const excludeFilter = noSensitivityFilter
     ? ""
     : `&sensitivity_tier=not.in.(${excluded.join(",")})`;
@@ -276,27 +282,60 @@ async function fetchThoughts(cfg, { windowDays, includePersonal, noSensitivityFi
   };
 
   const all = [];
+  // Memoize native `importance` column presence across pages. Start by
+  // assuming it exists (optimistic), flip to false on the first 400 that
+  // names the column, and cache on cfg so every subsequent page — and any
+  // future run that reuses this cfg — skips the probe.
+  let withImportance = cfg.hasNativeImportance !== false;
 
   for (let offset = 0; offset < FETCH_HARD_CAP; offset += PAGE_SIZE) {
     const limit = Math.min(PAGE_SIZE, FETCH_HARD_CAP - offset);
-    const url =
-      `${cfg.baseUrl}/rest/v1/thoughts` +
-      `?select=${selectCols}` +
-      `&created_at=gte.${sinceIso}` +
-      `&order=created_at.desc` +
-      `&limit=${limit}&offset=${offset}` +
-      excludeFilter;
 
-    const res = await fetch(url, { headers });
+    const doFetch = (useImportance) => {
+      const url =
+        `${cfg.baseUrl}/rest/v1/thoughts` +
+        `?select=${buildSelect(useImportance)}` +
+        `&created_at=gte.${sinceIso}` +
+        `&order=created_at.desc` +
+        `&limit=${limit}&offset=${offset}` +
+        excludeFilter;
+      return fetch(url, { headers });
+    };
 
-    // If sensitivity_tier column doesn't exist on this install, PostgREST
-    // returns 400 with "column does not exist". FAIL CLOSED: do not retry
-    // unfiltered, because that would silently leak restricted/personal
-    // thoughts on a brain that relies on the primitive's promise. Print a
-    // clear error and instruct the user how to proceed.
-    if (!res.ok && !noSensitivityFilter && res.status === 400) {
+    let res = await doFetch(withImportance);
+
+    // Error path: consume the body ONCE and branch on its content. We can't
+    // read .text() twice on the same Response, so we inspect it here and
+    // route to the importance-probe retry, the sensitivity fail-closed exit,
+    // or a generic throw. On success this block is skipped entirely.
+    if (!res.ok) {
       const text = await res.text();
-      if (/sensitivity_tier/.test(text)) {
+
+      // Optimistic importance probe: if this install lacks a native
+      // `importance` column, drop it from the select, memoize the result,
+      // and retry once. We match both the column name and "column... does
+      // not exist" wording to avoid mis-reacting to unrelated 400s.
+      if (
+        withImportance &&
+        res.status === 400 &&
+        /\bimportance\b/.test(text) &&
+        /column|does not exist/i.test(text)
+      ) {
+        withImportance = false;
+        cfg.hasNativeImportance = false;
+        res = await doFetch(false);
+        if (!res.ok) {
+          throw new Error(`thoughts fetch failed: ${res.status} ${await res.text()}`);
+        }
+      } else if (
+        !noSensitivityFilter &&
+        res.status === 400 &&
+        /sensitivity_tier/.test(text)
+      ) {
+        // Sensitivity column missing on this install. FAIL CLOSED: do not
+        // retry unfiltered, because that would silently leak restricted/
+        // personal thoughts on a brain that relies on the primitive's
+        // promise. Print a clear error and instruct the user how to proceed.
         console.error(
           "[weekly-digest] FATAL: sensitivity_tier column not found on public.thoughts.\n" +
             "\n" +
@@ -315,12 +354,9 @@ async function fetchThoughts(cfg, { windowDays, includePersonal, noSensitivityFi
             "PostgREST error detail: " + text,
         );
         process.exit(1);
+      } else {
+        throw new Error(`thoughts fetch failed: ${res.status} ${text}`);
       }
-      throw new Error(`thoughts fetch failed: ${res.status} ${text}`);
-    }
-
-    if (!res.ok) {
-      throw new Error(`thoughts fetch failed: ${res.status} ${await res.text()}`);
     }
 
     const batch = await res.json();
@@ -329,21 +365,36 @@ async function fetchThoughts(cfg, { windowDays, includePersonal, noSensitivityFi
     if (batch.length < limit) break;
   }
 
+  // Cache for any helpers that peek at cfg later. Default to true when we
+  // never had to flip the flag (the column was there, or the table was
+  // empty so we never got a 400 to prove otherwise).
+  if (cfg.hasNativeImportance === undefined) {
+    cfg.hasNativeImportance = withImportance;
+  }
+
   return all;
 }
 
 /**
- * Read the importance score for a thought. Stock OB1 has no `importance`
- * column on public.thoughts; capture pipelines that score importance stash
- * it under `metadata.importance`. We prefer a native top-level `importance`
- * if a given install happens to have one (via COALESCE-style logic), then
- * fall back to `metadata.importance`, then 0.
+ * Read the importance score for a thought. Enhanced-schema installs expose
+ * a native `importance` column on public.thoughts; stock OB1 does not.
+ * `fetchThoughts` optimistically selects the column, retries without it on
+ * the "column does not exist" 400, and memoizes the result. This helper
+ * prefers the native top-level value when present (via COALESCE-style
+ * logic), then falls back to `metadata.importance`, then 0 — so both
+ * schemas produce correct rankings without any caller-side flag.
  *
- * Accepts number or numeric string in metadata (JSON round-trip safety).
+ * Accepts number or numeric string in either location (JSON round-trip
+ * safety, since metadata comes back as parsed JSON but some capture
+ * pipelines stringify the field).
  */
 function thoughtImportance(t) {
   const native = t?.importance;
   if (typeof native === "number" && Number.isFinite(native)) return native;
+  if (typeof native === "string") {
+    const n = Number(native);
+    if (Number.isFinite(n)) return n;
+  }
   const m = t?.metadata?.importance;
   if (typeof m === "number" && Number.isFinite(m)) return m;
   if (typeof m === "string") {
