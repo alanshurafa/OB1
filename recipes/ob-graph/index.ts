@@ -60,7 +60,7 @@ app.post("*", async (c) => {
   }
 
   const server = new McpServer(
-    { name: "ob-graph", version: "1.0.0" },
+    { name: "ob-graph", version: "1.0.1" },
   );
 
   // ==========================================================================
@@ -534,6 +534,6 @@ app.post("*", async (c) => {
   return transport.handleRequest(c);
 });
 
-app.get("*", (c) => c.json({ status: "ok", service: "OB-Graph MCP", version: "1.0.0" }));
+app.get("*", (c) => c.json({ status: "ok", service: "OB-Graph MCP", version: "1.0.1" }));
 
 Deno.serve(app.fetch);
