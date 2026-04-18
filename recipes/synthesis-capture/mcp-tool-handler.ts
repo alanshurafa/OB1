@@ -195,11 +195,30 @@ server.registerTool(
         mergedMetadata.tags = tags;
       }
 
+      // Belt-and-suspenders: mirror provenance fields into metadata so they
+      // survive the stock `upsert_thought` RPC, which only persists
+      // `p_payload.metadata` and silently drops top-level `p_payload` keys.
+      // TODO(synthesis-capture): once the sibling `provenance-chains` recipe
+      // lands on main with an updated RPC that reads top-level
+      // `source_type`, `derivation_layer`, `derivation_method`, and
+      // `derived_from`, this metadata mirror becomes redundant and can be
+      // removed. Until then, this is the ONLY code path that guarantees
+      // provenance lands somewhere queryable on stock installs.
+      // See DEPENDENCIES.md for the full rationale.
+      mergedMetadata.provenance = {
+        source_type: "synthesis",
+        derivation_layer: "derived",
+        derivation_method: "synthesis",
+        derived_from: sourceIds,
+      };
+
       const { data: upsertResult, error: upsertError } = await supabase.rpc(
         "upsert_thought",
         {
           p_content: trimmed,
           p_payload: {
+            // Top-level provenance: works on the patched RPC from the
+            // sibling provenance-chains recipe.
             source_type: "synthesis",
             metadata: mergedMetadata,
             derivation_layer: "derived",
@@ -241,14 +260,18 @@ server.registerTool(
         .eq("id", thoughtId);
 
       if (embError) {
+        // Soft-fail: the thought row is durable; only the embedding failed.
+        // We return isError: false so the caller does not retry the whole
+        // capture (which would be idempotent via fingerprint anyway, but
+        // is wasteful). This matches REST-side semantics — both surface
+        // embedding failure as a warning on an otherwise-successful write.
         return {
           content: [
             {
               type: "text" as const,
-              text: `Captured synthesis #${thoughtId} but embedding update failed: ${embError.message}`,
+              text: `Captured synthesis #${thoughtId} from ${sourceIds.length} source thoughts (embedding update failed — searchable text still saved; call reembed_thought to retry: ${embError.message})`,
             },
           ],
-          isError: true,
         };
       }
 

@@ -210,10 +210,20 @@ export async function handleCaptureSynthesis(req: Request): Promise<Response> {
   // filtering/reporting. A caller who sets source: "capture_thought" in
   // body.metadata would otherwise impersonate an MCP-atomic write.
   mergedMetadata.source = "rest_synthesis";
-  mergedMetadata.source_type = "synthesis";
-  mergedMetadata.derivation_layer = "derived";
-  mergedMetadata.derivation_method = "synthesis";
-  mergedMetadata.derived_from = sourceIds;
+  // Belt-and-suspenders: mirror provenance fields into metadata so they
+  // survive the stock `upsert_thought` RPC, which only persists
+  // `p_payload.metadata` and silently drops top-level `p_payload` keys.
+  // TODO(synthesis-capture): once the sibling `provenance-chains` recipe
+  // lands on main with an updated RPC that reads top-level provenance
+  // fields, this mirror becomes redundant and can be removed. Until then,
+  // this is the ONLY code path that guarantees provenance lands somewhere
+  // queryable on stock installs. See DEPENDENCIES.md for full rationale.
+  mergedMetadata.provenance = {
+    source_type: "synthesis",
+    derivation_layer: "derived",
+    derivation_method: "synthesis",
+    derived_from: sourceIds,
+  };
 
   const { data: upsertResult, error: upsertError } = await supabase.rpc(
     "upsert_thought",
