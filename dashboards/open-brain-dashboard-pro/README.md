@@ -131,7 +131,6 @@ The app listens on port 3000 by default; use `PORT=4000 npm start` to override.
 - **React 19** + TypeScript
 - **Tailwind CSS 4** (dark theme, custom palette)
 - **iron-session 8** (encrypted cookies)
-- **react-markdown + remark-gfm** (available for future rich-content rendering)
 
 ## Troubleshooting
 

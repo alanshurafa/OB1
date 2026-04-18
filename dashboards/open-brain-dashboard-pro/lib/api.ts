@@ -75,11 +75,14 @@ export async function fetchThoughts(
   }
 ): Promise<BrowseResponse> {
   const sp = new URLSearchParams();
-  if (params?.page) sp.set("page", String(params.page));
-  if (params?.per_page) sp.set("per_page", String(params.per_page));
+  // IN-07: use `!== undefined` for numeric filters so zero is preserved.
+  // `page=0` is meaningless but `importance_min=0` is "include Noise tier".
+  if (params?.page !== undefined) sp.set("page", String(params.page));
+  if (params?.per_page !== undefined)
+    sp.set("per_page", String(params.per_page));
   if (params?.type) sp.set("type", params.type);
   if (params?.source_type) sp.set("source_type", params.source_type);
-  if (params?.importance_min)
+  if (params?.importance_min !== undefined)
     sp.set("importance_min", String(params.importance_min));
   if (params?.quality_score_max !== undefined)
     sp.set("quality_score_max", String(params.quality_score_max));
@@ -120,8 +123,10 @@ export async function fetchDuplicates(
   params?: { threshold?: number; limit?: number; offset?: number }
 ): Promise<import("./types").DuplicatesResponse> {
   const sp = new URLSearchParams();
-  if (params?.threshold) sp.set("threshold", String(params.threshold));
-  if (params?.limit) sp.set("limit", String(params.limit));
+  // IN-07: preserve zero/explicit numeric values
+  if (params?.threshold !== undefined)
+    sp.set("threshold", String(params.threshold));
+  if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.offset !== undefined) sp.set("offset", String(params.offset));
   const qs = sp.toString();
   return apiFetch(apiKey, `/duplicates${qs ? `?${qs}` : ""}`);
@@ -188,7 +193,8 @@ export async function fetchStats(
   excludeRestricted: boolean = true
 ): Promise<StatsResponse> {
   const sp = new URLSearchParams();
-  if (days) sp.set("days", String(days));
+  // IN-07: preserve explicit numeric values including zero.
+  if (days !== undefined) sp.set("days", String(days));
   if (!excludeRestricted) sp.set("exclude_restricted", "false");
   const qs = sp.toString();
   return apiFetch<StatsResponse>(apiKey, `/stats${qs ? `?${qs}` : ""}`);
@@ -216,11 +222,13 @@ export async function captureThought(
 export async function fetchIngestionJobs(
   apiKey: string
 ): Promise<IngestionJob[]> {
-  const data = await apiFetch<{ jobs: IngestionJob[]; count: number }>(
-    apiKey,
-    "/ingestion-jobs"
-  );
-  return data.jobs;
+  // IN-06: Tolerate both shapes — bare array OR { jobs: [...], count: N }
+  const data = await apiFetch<unknown>(apiKey, "/ingestion-jobs");
+  if (Array.isArray(data)) return data as IngestionJob[];
+  if (data && typeof data === "object" && Array.isArray((data as { jobs?: unknown }).jobs)) {
+    return (data as { jobs: IngestionJob[] }).jobs;
+  }
+  return [];
 }
 
 export async function triggerIngest(
