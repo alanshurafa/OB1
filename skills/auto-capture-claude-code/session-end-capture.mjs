@@ -29,6 +29,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { fileURLToPath } from "node:url";
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -41,9 +42,14 @@ const RETRY_BATCH_SIZE = 3;
 // the process being killed mid-flight by the hard timeout.
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS) || 10000;
 
-// Paths — adapt these to your project layout
-const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
-const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "../..");
+// Paths — adapt these to your project layout.
+// fileURLToPath handles Windows drive letters (any case) and non-ASCII paths
+// correctly. PROJECT_ROOT defaults to two levels up from the script, but can
+// be overridden with OB_PROJECT_ROOT when the script lives outside a repo.
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = process.env.OB_PROJECT_ROOT
+  ? path.resolve(process.env.OB_PROJECT_ROOT)
+  : path.resolve(SCRIPT_DIR, "../..");
 const ENV_PATH = path.join(PROJECT_ROOT, ".env.local");
 const LOG_DIR = path.join(PROJECT_ROOT, "logs");
 const LOG_PATH = path.join(LOG_DIR, "ambient-capture.log");
