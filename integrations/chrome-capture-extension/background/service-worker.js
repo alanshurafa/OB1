@@ -229,8 +229,9 @@ async function processCaptureRequest(message) {
   }
 
   // Ambient capture was removed — no passive observer ships yet. Manual
-  // clicks and bulk sync both bypass the minResponseLength gate on purpose:
-  // the user has explicitly asked for this turn to be captured.
+  // clicks and bulk sync are the only remaining paths and both capture
+  // unconditionally: the user (or a user-triggered sync) explicitly
+  // asked for this turn to be captured, so there is no length gate here.
 
   const sensitivity = await OBSensitivity.detectSensitivity(capture.text);
   if (sensitivity.tier === 'restricted') {
@@ -435,8 +436,7 @@ async function getStatus() {
     settings: {
       apiEndpoint: config.apiEndpoint,
       apiKeyConfigured: Boolean(config.apiKey),
-      enabledPlatforms: config.enabledPlatforms,
-      minResponseLength: config.minResponseLength
+      enabledPlatforms: config.enabledPlatforms
     },
     sessionMetrics: {
       ...sessionMetrics,

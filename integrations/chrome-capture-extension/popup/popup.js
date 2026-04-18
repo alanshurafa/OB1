@@ -12,14 +12,11 @@
   const skippedCount = document.getElementById('skipped-count');
   const failedCount = document.getElementById('failed-count');
   const platformSummary = document.getElementById('platform-summary');
-  const minLengthSummary = document.getElementById('min-length-summary');
   const endpointSummary = document.getElementById('endpoint-summary');
   const captureLog = document.getElementById('capture-log');
   const enabledChatgpt = document.getElementById('enabled-chatgpt');
   const enabledClaude = document.getElementById('enabled-claude');
   const enabledGemini = document.getElementById('enabled-gemini');
-  const minLengthInput = document.getElementById('min-length');
-  const minLengthValue = document.getElementById('min-length-value');
   const captureCurrentButton = document.getElementById('capture-current');
   const captureResult = document.getElementById('capture-result');
   const testConnectionButton = document.getElementById('test-connection');
@@ -86,7 +83,7 @@
 
   async function saveMutableSettings() {
     // NOTE: API URL and key are only editable on the config page. Here we
-    // only persist toggles and thresholds so accidental popup edits can't
+    // only persist the platform toggles so accidental popup edits can't
     // nuke the user's configured credentials.
     const current = await OBConfig.getConfig();
     const merged = OBConfig.mergeSettings({
@@ -95,8 +92,7 @@
         chatgpt: enabledChatgpt.checked,
         claude: enabledClaude.checked,
         gemini: enabledGemini.checked
-      },
-      minResponseLength: Number(minLengthInput.value)
+      }
     });
 
     await chrome.runtime.sendMessage({ type: 'SAVE_CONFIG', config: merged });
@@ -107,11 +103,8 @@
     enabledChatgpt.checked = Boolean(config.enabledPlatforms.chatgpt);
     enabledClaude.checked = Boolean(config.enabledPlatforms.claude);
     enabledGemini.checked = Boolean(config.enabledPlatforms.gemini);
-    minLengthInput.value = config.minResponseLength;
-    minLengthValue.textContent = String(config.minResponseLength);
 
     platformSummary.textContent = formatPlatformSummary(config.enabledPlatforms);
-    minLengthSummary.textContent = `${config.minResponseLength} chars`;
     endpointSummary.textContent = config.apiEndpoint || '(not configured)';
 
     const isConfigured = OBConfig.isConfigured(config);
@@ -207,13 +200,9 @@
     });
   });
 
-  [enabledChatgpt, enabledClaude, enabledGemini, minLengthInput].forEach((element) => {
+  [enabledChatgpt, enabledClaude, enabledGemini].forEach((element) => {
     element.addEventListener('input', saveMutableSettings);
     element.addEventListener('change', saveMutableSettings);
-  });
-
-  minLengthInput.addEventListener('input', () => {
-    minLengthValue.textContent = minLengthInput.value;
   });
 
   openConfigBtn.addEventListener('click', openConfigPage);

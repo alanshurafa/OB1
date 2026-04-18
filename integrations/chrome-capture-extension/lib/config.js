@@ -53,7 +53,13 @@
     // never wired up. Per-message captureMode on ingest payloads remains
     // ('manual' for user clicks, 'sync' for bulk import) — that's a
     // source-provenance hint, not a user preference.
-    minResponseLength: 100,
+    //
+    // NOTE: the former `minResponseLength` slider was also removed: it
+    // only gated ambient capture, which does not exist. Manual capture and
+    // bulk sync deliberately bypass any such gate (the user explicitly
+    // asked to capture the turn), so the control was dead UI. Legacy saved
+    // settings that still carry `minResponseLength` are harmless — they
+    // are dropped during mergeSettings().
     autoSyncEnabled: false,
     autoSyncIntervalMinutes: 15
   };
@@ -111,12 +117,10 @@
         ...incoming.enabledPlatforms
       };
     }
-    // incoming.captureMode (auto/manual) is intentionally ignored — that
-    // user-preference toggle was removed. Legacy saved settings that still
-    // carry the field are harmless: they're simply dropped during merge.
-    if (Number.isFinite(Number(incoming.minResponseLength))) {
-      merged.minResponseLength = Math.max(0, Number(incoming.minResponseLength));
-    }
+    // incoming.captureMode (auto/manual) and incoming.minResponseLength
+    // are intentionally ignored — those user-preference controls were
+    // removed. Legacy saved settings that still carry the fields are
+    // harmless: they're simply dropped during merge.
 
     return merged;
   }
@@ -163,10 +167,9 @@
    *     avoids leaking the endpoint to loaner Chromebooks / shared profiles
    *     and sidesteps chrome.storage.sync's 8KB-per-item / 100KB-total
    *     quota, which can reject silently for long URLs + settings.
-   *   - Non-secret preferences (platform toggles, minResponseLength) still
-   *     live in chrome.storage.sync so they
-   *     follow the user. If sync is disabled or over quota we fall back
-   *     to local-only transparently.
+   *   - Non-secret preferences (platform toggles) still live in
+   *     chrome.storage.sync so they follow the user. If sync is disabled
+   *     or over quota we fall back to local-only transparently.
    */
   async function getConfig() {
     const [syncStored, localStored, localSettings] = await Promise.all([
