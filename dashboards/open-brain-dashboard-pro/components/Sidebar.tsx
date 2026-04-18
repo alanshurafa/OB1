@@ -21,7 +21,11 @@ const nav: NavItem[] = [
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export function Sidebar() {
+export function Sidebar({
+  restrictedConfigured = false,
+}: {
+  restrictedConfigured?: boolean;
+}) {
   const pathname = usePathname();
 
   // Hide sidebar on login page
@@ -66,7 +70,7 @@ export function Sidebar() {
       </nav>
 
       <div className="px-3 py-3 border-t border-border space-y-2">
-        <RestrictedToggle />
+        {restrictedConfigured && <RestrictedToggle />}
         <form action="/api/logout" method="POST">
           <button
             type="submit"
