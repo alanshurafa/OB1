@@ -328,7 +328,7 @@ Deno.serve(async (req) => {
     if (executeMatch && req.method === "POST") {
       const execJobId = validateId(executeMatch[1]);
       if (!execJobId) return json({ error: "Invalid job ID" }, 400);
-      return await handleExecuteJob(execJobId);
+      return await handleExecuteJob(execJobId, req);
     }
 
     const jobDetailMatch = path.match(/^\/ingestion-jobs\/(\d+)$/);
@@ -742,25 +742,105 @@ async function handleEnrichThought(thoughtId: string, url: URL): Promise<Respons
 
 // ── Smart Ingest Proxy ──────────────────────────────────────────────────────
 
-async function handleIngest(req: Request): Promise<Response> {
-  const body = await req.json() as Record<string, unknown>;
-  if (body.auto_execute) { body.dry_run = false; delete body.auto_execute; }
+const PROXY_BODY_MAX_BYTES = 1_000_000; // 1 MB
+const PROXY_TIMEOUT_MS = 60_000;
 
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/smart-ingest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-brain-key": MCP_ACCESS_KEY },
-    body: JSON.stringify(body),
-  });
-  return json(await response.json(), response.status);
+/**
+ * Read an incoming request body safely: enforce a 1 MB cap before
+ * JSON-parsing. Returns either a parsed record or a Response to return
+ * to the caller (413 over-size, or 400 malformed JSON).
+ */
+async function readJsonWithCap(
+  req: Request,
+): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; resp: Response }> {
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > PROXY_BODY_MAX_BYTES) {
+    return { ok: false, resp: json({ error: "payload_too_large", max_bytes: PROXY_BODY_MAX_BYTES }, 413, req) };
+  }
+  const text = await req.text();
+  if (text.length > PROXY_BODY_MAX_BYTES) {
+    return { ok: false, resp: json({ error: "payload_too_large", max_bytes: PROXY_BODY_MAX_BYTES }, 413, req) };
+  }
+  if (!text.trim()) return { ok: true, body: {} };
+  try {
+    const parsed = JSON.parse(text);
+    if (!isRecord(parsed)) {
+      return { ok: false, resp: json({ error: "Body must be a JSON object" }, 400, req) };
+    }
+    return { ok: true, body: parsed };
+  } catch {
+    return { ok: false, resp: json({ error: "Invalid JSON in request body" }, 400, req) };
+  }
 }
 
-async function handleExecuteJob(jobId: string): Promise<Response> {
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/smart-ingest/execute`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-brain-key": MCP_ACCESS_KEY },
-    body: JSON.stringify({ job_id: jobId }),
-  });
-  return json(await response.json(), response.status);
+/**
+ * Proxy an upstream POST with a bounded timeout and defensive response
+ * handling. Differentiates between upstream timeout (504), upstream
+ * unreachable (502), upstream-returned-non-JSON (surfaces raw text plus
+ * upstream status), and upstream-returned-JSON (forwards verbatim).
+ */
+async function proxyFetchJson(
+  url: string,
+  body: unknown,
+  req: Request,
+  timeoutMs = PROXY_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-brain-key": MCP_ACCESS_KEY },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await upstream.text();
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json") && text.trim()) {
+      try {
+        return json(JSON.parse(text), upstream.status, req);
+      } catch {
+        return json(
+          { error: "upstream_invalid_json", upstream_status: upstream.status, raw: text.slice(0, 2000) },
+          502,
+          req,
+        );
+      }
+    }
+    // Non-JSON upstream response (HTML error page, empty 502, text/plain, etc.)
+    return json(
+      {
+        error: upstream.ok ? "upstream_empty" : "upstream_error",
+        upstream_status: upstream.status,
+        raw: text.slice(0, 2000),
+      },
+      upstream.ok ? 502 : upstream.status,
+      req,
+    );
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      return json({ error: "upstream_timeout", timeout_ms: timeoutMs }, 504, req);
+    }
+    return json({ error: "upstream_unreachable" }, 502, req);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleIngest(req: Request): Promise<Response> {
+  const read = await readJsonWithCap(req);
+  if (!read.ok) return read.resp;
+  const body = read.body;
+  if (body.auto_execute) { body.dry_run = false; delete body.auto_execute; }
+  return await proxyFetchJson(`${SUPABASE_URL}/functions/v1/smart-ingest`, body, req);
+}
+
+async function handleExecuteJob(jobId: string, req: Request): Promise<Response> {
+  return await proxyFetchJson(
+    `${SUPABASE_URL}/functions/v1/smart-ingest/execute`,
+    { job_id: jobId },
+    req,
+  );
 }
 
 async function handleListJobs(url: URL): Promise<Response> {
