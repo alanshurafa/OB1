@@ -20,17 +20,18 @@ Run it:
 ## Categories Checked
 
 1. **MCP Server** -- The `open-brain-mcp` Edge Function responds, exposes the four canonical tools (`search_thoughts`, `list_thoughts`, `thought_stats`, `capture_thought`), and completes a JSON-RPC `initialize` handshake.
-2. **REST API** -- If you have installed the optional `rest-api` integration or set `REST_API_BASE`, the gateway answers `/health`, `/recent`, `/search`, and `/stats`. Skipped otherwise.
+2. **REST API** -- If you have installed the optional `rest-api` integration or set `REST_API_BASE`, the gateway answers `/health`, `/thoughts`, `/search`, and `/stats`. The `NEXT_PUBLIC_API_URL` env var (the base URL the dashboard is pointed at) is also probed and only passes on a 2xx response. Skipped otherwise.
 3. **DB Schema** -- The canonical `public.thoughts` table exists with `id, content, embedding, metadata, created_at, updated_at`, the dedup fingerprint column is present, and `match_thoughts` + `upsert_thought` RPCs are callable. Optional tables (`entities`, `edges`, `ingestion_jobs`) and the `search_thoughts_text` RPC are detected and skipped when absent.
 4. **Auth** -- `MCP_ACCESS_KEY` is enforced: requests with no key, with a wrong key, with the header (`x-brain-key`), and with the query string (`?key=`) all produce the expected outcome.
-5. **Core Features** -- End-to-end capture + search + cleanup. Inserts a uniquely-tagged row via REST, fetches it back, then calls MCP's `capture_thought` and `search_thoughts` tools and confirms the tag appears. Deletes both rows at the end.
-6. **Safety Rails** -- RLS rejects unauthenticated PostgREST calls, rejects an invalid `apikey`, and the service role can still read.
+5. **Core Features** -- **Destructive, opt-in via `--destructive`.** End-to-end capture + search + cleanup. Inserts a uniquely-tagged row via REST (triggers embedding + LLM metadata generation), fetches it back, calls MCP's `capture_thought` and `search_thoughts`, then deletes by tag. Skipped by default so CI can run this harness against shared/prod instances without mutating data or spending external model credits.
+6. **Access Key Enforcement** -- The Supabase PostgREST gateway rejects requests with no `apikey` and with an invalid `apikey`. This runs **before** RLS, so these checks alone do not prove RLS is configured -- see category 7.
+7. **Row-Level Security** -- Actually probes whether RLS is on and policies are restrictive. Tries an optional helper RPC (`pg_class_rls`) to read `pg_catalog.pg_class.relrowsecurity`. Also, if `SUPABASE_ANON_KEY` is set, does an anon-key read of `public.thoughts` and **fails loud** if rows come back (means RLS is off or a permissive `ALL USING (true)` policy is leaking data). Without `SUPABASE_ANON_KEY`, the anon probe is skipped with a clear note that RLS is unverified.
 
 ## Prerequisites
 
 - Working Open Brain setup ([guide](../../docs/01-getting-started.md))
 - Node.js 18 or later (uses the built-in `fetch` and `AbortController`)
-- A local `.env.local` file (or exported environment variables) in this recipe directory
+- A local `.env.local` file (or exported environment variables) sitting next to `smoke-all.mjs`. The script looks for `.env.local` in its own directory first (so `node recipes/brain-smoke-test/smoke-all.mjs` works from any cwd) and falls back to the current working directory.
 
 ## Credential Tracker
 
@@ -47,7 +48,10 @@ FROM YOUR OPEN BRAIN SETUP
 
 OPTIONAL (unlocks extra checks, safe to leave blank on stock installs)
   REST API base URL:          ____________  (e.g. https://<ref>.supabase.co/functions/v1/open-brain-rest)
-  Dashboard API base URL:     ____________  (e.g. https://dashboard.example.com/api)
+  Dashboard REST base URL:    ____________  (the NEXT_PUBLIC_API_URL the dashboard uses;
+                                              same shape as REST API base URL)
+  Anon/publishable key:       ____________  (enables a real anon-key RLS probe in the
+                                              Row-Level Security category)
 
 --------------------------------------
 ```
@@ -65,9 +69,15 @@ No build step. Just drop the file in and run it.
    SUPABASE_SERVICE_ROLE_KEY=your-service-role-secret-key
    MCP_ACCESS_KEY=your-access-key-from-step-5
 
-   # Optional -- unlocks REST API checks. Leave unset on stock installs.
+   # Optional -- unlocks the REST API category. Leave unset on stock installs.
    # REST_API_BASE=https://YOUR_PROJECT_REF.supabase.co/functions/v1/open-brain-rest
-   # NEXT_PUBLIC_API_URL=https://your-dashboard.example.com/api
+
+   # Optional -- same base URL the dashboard uses (NEXT_PUBLIC_API_URL).
+   # NEXT_PUBLIC_API_URL=https://YOUR_PROJECT_REF.supabase.co/functions/v1/open-brain-rest
+
+   # Optional -- enables a real RLS probe that reads public.thoughts with
+   # the anon key and fails if rows come back.
+   # SUPABASE_ANON_KEY=your-anon-publishable-key
    ```
 
 3. Run it:
@@ -79,29 +89,39 @@ No build step. Just drop the file in and run it.
 ## Usage
 
 ```bash
-# Pretty-printed dashboard (default)
+# Pretty-printed dashboard (default). Read-only: no data is inserted or
+# deleted, no LLM calls are made. Core Features is SKIPPED.
 node smoke-all.mjs
 
 # Machine-readable JSON -- pipe into jq, a log aggregator, or CI assertions
 node smoke-all.mjs --json
 
+# Opt in to the destructive Core Features category. Inserts a uniquely-
+# tagged row via the service-role key, triggers embedding + LLM metadata
+# generation, then deletes by tag. Cleanup runs on normal exit, on a
+# thrown check, and on SIGINT/SIGTERM, so ctrl-c does not leave residue.
+# Use this against a dev/scratch project, NOT a shared/prod instance.
+node smoke-all.mjs --destructive
+node smoke-all.mjs --write         # alias
+
 # Run only one category (names are case-insensitive)
 node smoke-all.mjs --category="DB Schema"
 node smoke-all.mjs --category=Auth
-node smoke-all.mjs --category="Core Features"
+node smoke-all.mjs --category="Core Features" --destructive
+node smoke-all.mjs --category="Row-Level Security"
 
 # Show this usage
 node smoke-all.mjs --help
 ```
 
-The six category names are `MCP Server`, `REST API`, `DB Schema`, `Auth`, `Core Features`, `Safety Rails`.
+The seven category names are `MCP Server`, `REST API`, `DB Schema`, `Auth`, `Core Features`, `Access Key Enforcement`, and `Row-Level Security`.
 
 ## Example Output
 
-A healthy stock install where the REST API integration is not installed:
+A healthy stock install where the REST API integration is not installed, run without `--destructive`:
 
 ```text
-Open Brain Smoke Test -- 30 checks across 6 categories
+Open Brain Smoke Test -- 27 checks across 7 categories
 Target: https://abcd1234.supabase.co
 
 MCP Server:
@@ -111,10 +131,10 @@ MCP Server:
 
 REST API:
   ⚠ GET /health                                               92ms -- REST API not installed
-  ⚠ GET /recent?limit=3                                       88ms -- REST API not installed
+  ⚠ GET /thoughts?limit=3                                     88ms -- REST API not installed
   ⚠ POST /search (text)                                       91ms -- REST API not installed
   ⚠ GET /stats                                                87ms -- REST API not installed
-  ⚠ Dashboard health (NEXT_PUBLIC_API_URL)                     1ms -- NEXT_PUBLIC_API_URL unset
+  ⚠ REST API base URL (NEXT_PUBLIC_API_URL) responds 2xx       1ms -- NEXT_PUBLIC_API_URL unset
 
 DB Schema:
   ✓ thoughts table present                                   178ms -- rows=1247
@@ -135,22 +155,24 @@ Auth:
   ✓ MCP accepts correct access key (?key=)                   201ms -- HTTP 200
 
 Core Features:
-  ✓ Insert test thought via direct REST                      188ms -- id=a1b2c3d4...
-  ✓ Retrieve test thought by id                              142ms -- content matches
-  ✓ MCP capture_thought tool call                           2431ms -- captured
-  ✓ MCP search_thoughts finds test row                      2612ms -- found on attempt 1
-  ✓ Cleanup: delete test rows                                189ms -- deleted
+  ⚠ Core Features (destructive)                                0ms -- pass --destructive to exercise capture + search + cleanup (writes rows, spends LLM credits)
 
-Safety Rails:
-  ✓ RLS enabled on thoughts                                   98ms -- HTTP 401 (unauthenticated access rejected)
-  ✓ Anon/publishable key cannot read thoughts                102ms -- HTTP 401 (rejected)
+Access Key Enforcement:
+  ✓ PostgREST rejects missing apikey                          98ms -- HTTP 401 (rejected before RLS)
+  ✓ PostgREST rejects invalid apikey                         102ms -- HTTP 401 (rejected before RLS)
   ✓ Service role can read thoughts                           154ms -- rows=1247
 
-Summary: 21 pass, 9 skip, 0 fail (30 total)
+Row-Level Security:
+  ⚠ pg_class.relrowsecurity = true for public.thoughts        94ms -- pg_class_rls helper RPC not installed (rely on anon probe)
+  ⚠ Anon key cannot read thoughts (real RLS probe)             1ms -- SUPABASE_ANON_KEY unset -- RLS not verified end-to-end
+
+Summary: 17 pass, 10 skip, 0 fail (27 total)
 Result: OK
 ```
 
 Legend: `✓` pass, `⚠` skipped (optional feature not installed), `✗` failed.
+
+Note: with `--destructive` and `SUPABASE_ANON_KEY` set, the skip count drops as Core Features and the RLS anon probe become real checks.
 
 ## Exit Codes
 
@@ -158,13 +180,13 @@ Legend: `✓` pass, `⚠` skipped (optional feature not installed), `✗` failed
 - `1` -- at least one check failed
 - `2` -- setup error (missing required env var, unknown `--category`)
 
-Skipped checks never fail the run, so you can wire this into CI without it going red every time an optional recipe is absent.
+Skipped checks never fail the run, so you can wire this into CI without it going red every time an optional recipe is absent. **Warning:** a `⚠` on the anon-key RLS probe means RLS was not actually verified -- set `SUPABASE_ANON_KEY` before trusting the run as a safety-rail gate.
 
 ## Extending
 
 Each category is a plain array of `{ name, fn }` entries. To add a check:
 
-1. Pick the category array (`mcpChecks`, `restChecks`, `dbChecks`, `authChecks`, `coreChecks`, or `safetyChecks`) inside `smoke-all.mjs`.
+1. Pick the category array (`mcpChecks`, `restChecks`, `dbChecks`, `authChecks`, `coreChecks`, `accessKeyChecks`, or `rlsChecks`) inside `smoke-all.mjs`.
 2. Append an entry:
 
    ```js
