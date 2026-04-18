@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export function middleware(request: NextRequest) {
+// Next.js 16 renamed the middleware convention to "proxy". The former
+// `middleware.ts` filename still works but triggers a build-time deprecation
+// warning. We preserve the auth defense-in-depth behavior (session-cookie
+// redirect) here. See README → Deployment for the Cloudflare caveat.
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Allow login page, API routes, and static assets
