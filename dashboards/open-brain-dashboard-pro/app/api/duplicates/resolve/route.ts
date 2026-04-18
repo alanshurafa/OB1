@@ -6,8 +6,11 @@ import { requireSession, AuthError } from "@/lib/auth";
 // server-side re-verification floor. A pair only counts as a "duplicate" if the
 // backend still agrees at this threshold.
 const MIN_DUPLICATE_THRESHOLD = 0.8;
-// BL-03: Sanity bound on how many pairs we'll scan through to find this pair.
-const VERIFY_SCAN_LIMIT = 500;
+// REVIEW-CODEX-2-P2: paginate through candidate pairs until we either find the
+// requested pair or hit the safety cap. The previous single-page 500-pair
+// window made pairs on later UI pages impossible to resolve.
+const VERIFY_PAGE_SIZE = 500;
+const VERIFY_MAX_SCAN = 5000;
 
 export async function POST(request: NextRequest) {
   let apiKey: string;
@@ -58,20 +61,45 @@ export async function POST(request: NextRequest) {
     // BL-03: Re-verify the pair is an actual near-duplicate at MIN_DUPLICATE_THRESHOLD.
     // This prevents a user from passing arbitrary IDs with action:"keep_a"
     // to delete an arbitrary thought B that is NOT actually a duplicate.
-    const dups = await fetchDuplicates(apiKey, {
-      threshold: MIN_DUPLICATE_THRESHOLD,
-      limit: VERIFY_SCAN_LIMIT,
-      offset: 0,
-    });
-    const pairMatches = dups.pairs.some(
-      (p) =>
-        (p.thought_id_a === idA && p.thought_id_b === idB) ||
-        (p.thought_id_a === idB && p.thought_id_b === idA)
-    );
+    // REVIEW-CODEX-2-P2: walk pages until we find the pair or exceed the cap.
+    // Previously we only scanned the first 500-pair page, so pairs surfaced
+    // on later UI pages could not be resolved.
+    let pairMatches = false;
+    let scanned = 0;
+    let offset = 0;
+    while (scanned < VERIFY_MAX_SCAN) {
+      const dups = await fetchDuplicates(apiKey, {
+        threshold: MIN_DUPLICATE_THRESHOLD,
+        limit: VERIFY_PAGE_SIZE,
+        offset,
+      });
+      const pageLen = dups.pairs.length;
+      if (
+        dups.pairs.some(
+          (p) =>
+            (p.thought_id_a === idA && p.thought_id_b === idB) ||
+            (p.thought_id_a === idB && p.thought_id_b === idA)
+        )
+      ) {
+        pairMatches = true;
+        break;
+      }
+      scanned += pageLen;
+      // Backend returned fewer than a full page → no more pairs to scan.
+      if (pageLen < VERIFY_PAGE_SIZE) break;
+      offset += VERIFY_PAGE_SIZE;
+    }
     if (!pairMatches) {
+      // If we hit the cap without finding the pair, tell the caller so they
+      // can narrow threshold / retry rather than silently 403-ing forever.
+      const hitCap = scanned >= VERIFY_MAX_SCAN;
       return NextResponse.json(
-        { error: "Pair is not a recognized duplicate" },
-        { status: 403 }
+        {
+          error: hitCap
+            ? `Pair not found after scanning ${VERIFY_MAX_SCAN} candidates — raise the UI threshold and retry`
+            : "Pair is not a recognized duplicate",
+        },
+        { status: hitCap ? 404 : 403 }
       );
     }
 
