@@ -27,13 +27,15 @@ PROVENANCE CHAINS PIPELINE -- CREDENTIAL TRACKER
 --------------------------------------
 
 FROM YOUR OPEN BRAIN SETUP
-  Supabase URL:              ____________   (OPEN_BRAIN_URL)
-  Service role key:          ____________   (OPEN_BRAIN_SERVICE_KEY)
+  Supabase URL:              ____________   (SUPABASE_URL)
+  Service role key:          ____________   (SUPABASE_SERVICE_ROLE_KEY)
 
 OPTIONAL — FOR OPENROUTER GRADER
   OpenRouter API key:        ____________   (OPENROUTER_API_KEY)
   Grader model override:     ____________   (e.g., anthropic/claude-3.5-haiku)
 
+Legacy names (still accepted with a deprecation warning):
+  OPEN_BRAIN_URL, OPEN_BRAIN_SERVICE_KEY
 --------------------------------------
 ```
 
@@ -45,17 +47,19 @@ OPTIONAL — FOR OPENROUTER GRADER
 
 ![Step 2](https://img.shields.io/badge/Step_2-Configure_Credentials-1E88E5?style=for-the-badge)
 
-2. Export your Supabase credentials (or put them in a `.env` file your shell sources):
+2. Export your Supabase credentials (or put them in a `.env` file your shell sources). The canonical names match every other OB1 recipe:
 
    ```bash
-   export OPEN_BRAIN_URL="https://<project-ref>.supabase.co"
-   export OPEN_BRAIN_SERVICE_KEY="<service_role key>"
+   export SUPABASE_URL="https://<project-ref>.supabase.co"
+   export SUPABASE_SERVICE_ROLE_KEY="<service_role key>"
    # Optional:
    export OPENROUTER_API_KEY="<openrouter key>"
    ```
 
+   The legacy pair `OPEN_BRAIN_URL` / `OPEN_BRAIN_SERVICE_KEY` still works — the scripts accept either and print a one-time deprecation warning when they see the legacy names. `ANTHROPIC_API_KEY` is also accepted as a fallback for `OPENROUTER_API_KEY` if your setup aliases the Anthropic key to an OpenRouter one.
+
    > [!CAUTION]
-   > `OPEN_BRAIN_SERVICE_KEY` must be your **service_role** key, not the anon key. The backfill/eval scripts need to PATCH the `thoughts` table, which is protected by RLS for non-service callers.
+   > The service key must be your **service_role** key, not the anon key. The backfill/eval scripts need to PATCH the `thoughts` table, which is protected by RLS for non-service callers.
 
 ![Step 3](https://img.shields.io/badge/Step_3-Dry_Run_Backfill-1E88E5?style=for-the-badge)
 

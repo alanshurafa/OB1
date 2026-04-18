@@ -15,8 +15,8 @@
  * skipped unless --force is passed.
  *
  * Usage:
- *   OPEN_BRAIN_URL=https://<ref>.supabase.co \
- *   OPEN_BRAIN_SERVICE_KEY=<service-role-key> \
+ *   SUPABASE_URL=https://<ref>.supabase.co \
+ *   SUPABASE_SERVICE_ROLE_KEY=<service-role-key> \
  *   node backfill.mjs --dry-run
  *
  *   node backfill.mjs --patterns '_pointer,_digest' --root ./artifacts
@@ -29,9 +29,12 @@
  *                      when the stored path is relative. Defaults to cwd.
  *   --limit N          Stop after N candidates (useful for smoke tests)
  *
- * Environment variables:
- *   OPEN_BRAIN_URL           Your Supabase project URL (e.g., https://abc.supabase.co)
- *   OPEN_BRAIN_SERVICE_KEY   service_role key (never the anon key)
+ * Environment variables (canonical names preferred, legacy names accepted
+ * with a one-time deprecation warning so existing setups keep working):
+ *   SUPABASE_URL               Your Supabase project URL (https://<ref>.supabase.co)
+ *   SUPABASE_SERVICE_ROLE_KEY  service_role key (never the anon key)
+ *
+ *   Legacy (deprecated): OPEN_BRAIN_URL, OPEN_BRAIN_SERVICE_KEY
  */
 
 import fs from "node:fs";
@@ -58,14 +61,34 @@ function parseArgs(argv) {
   return args;
 }
 
-const BASE_URL = (process.env.OPEN_BRAIN_URL ?? "").replace(/\/+$/, "");
-const SERVICE_KEY = process.env.OPEN_BRAIN_SERVICE_KEY ?? "";
+// Canonical names first, legacy OPEN_BRAIN_* accepted as a fallback so
+// existing setups keep working. Warn once per run if legacy names are in use.
+const URL_FROM_CANONICAL = process.env.SUPABASE_URL;
+const URL_FROM_LEGACY = process.env.OPEN_BRAIN_URL;
+const KEY_FROM_CANONICAL = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const KEY_FROM_LEGACY = process.env.OPEN_BRAIN_SERVICE_KEY;
+
+if (
+  (!URL_FROM_CANONICAL && URL_FROM_LEGACY) ||
+  (!KEY_FROM_CANONICAL && KEY_FROM_LEGACY)
+) {
+  console.warn(
+    "[backfill] DEPRECATION: OPEN_BRAIN_URL / OPEN_BRAIN_SERVICE_KEY are the " +
+    "legacy names. Prefer SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY — every " +
+    "other OB1 recipe uses those and the fallback will be removed in a future " +
+    "release.",
+  );
+}
+
+const BASE_URL = (URL_FROM_CANONICAL ?? URL_FROM_LEGACY ?? "").replace(/\/+$/, "");
+const SERVICE_KEY = KEY_FROM_CANONICAL ?? KEY_FROM_LEGACY ?? "";
 
 if (!BASE_URL || !SERVICE_KEY) {
   console.error(
-    "[backfill] missing env. Set OPEN_BRAIN_URL and OPEN_BRAIN_SERVICE_KEY." +
-    "\n  OPEN_BRAIN_URL should look like https://<project-ref>.supabase.co" +
-    "\n  OPEN_BRAIN_SERVICE_KEY is your service_role key (never the anon key).",
+    "[backfill] missing env. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY." +
+    "\n  SUPABASE_URL should look like https://<project-ref>.supabase.co" +
+    "\n  SUPABASE_SERVICE_ROLE_KEY is your service_role key (never the anon key)." +
+    "\n  (Legacy OPEN_BRAIN_URL / OPEN_BRAIN_SERVICE_KEY are still accepted.)",
   );
   process.exit(1);
 }

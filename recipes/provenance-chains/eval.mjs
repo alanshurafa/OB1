@@ -19,9 +19,9 @@
  *                 resume with --apply-scores FILE to write scores back
  *
  * Usage:
- *   OPEN_BRAIN_URL=https://<ref>.supabase.co \
- *   OPEN_BRAIN_SERVICE_KEY=<service-role-key> \
- *   OPENROUTER_API_KEY=<key> \
+ *   SUPABASE_URL=https://<ref>.supabase.co \
+ *   SUPABASE_SERVICE_ROLE_KEY=<service-role-key> \
+ *   ANTHROPIC_API_KEY=<key>   # or OPENROUTER_API_KEY as a fallback
  *   node eval.mjs --limit 5
  *
  *   node eval.mjs --grader stdin --ids <uuid>,<uuid>
@@ -78,12 +78,53 @@ function parseArgs(argv) {
   return args;
 }
 
-const BASE_URL = (process.env.OPEN_BRAIN_URL ?? "").replace(/\/+$/, "");
-const SERVICE_KEY = process.env.OPEN_BRAIN_SERVICE_KEY ?? "";
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? "";
+// Canonical SUPABASE_* names first, legacy OPEN_BRAIN_* accepted as a
+// fallback so existing setups keep working. Warn once per run if legacy
+// names are in use.
+//
+// Grader key: the openrouter grader hits openrouter.ai/api/v1 with a
+// bearer token, so either an OPENROUTER_API_KEY or (if your setup aliases
+// the canonical OB1 ANTHROPIC_API_KEY to an OpenRouter key) ANTHROPIC_API_KEY
+// will work. If only ANTHROPIC_API_KEY is set we warn that a real OpenRouter
+// key is expected for the openrouter grader so mis-set tokens fail loudly
+// instead of returning 401 deep in the run.
+const URL_FROM_CANONICAL = process.env.SUPABASE_URL;
+const URL_FROM_LEGACY = process.env.OPEN_BRAIN_URL;
+const KEY_FROM_CANONICAL = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const KEY_FROM_LEGACY = process.env.OPEN_BRAIN_SERVICE_KEY;
+const ANTHROPIC_KEY_RAW = process.env.ANTHROPIC_API_KEY ?? "";
+const OPENROUTER_KEY_RAW = process.env.OPENROUTER_API_KEY ?? "";
+
+if (
+  (!URL_FROM_CANONICAL && URL_FROM_LEGACY) ||
+  (!KEY_FROM_CANONICAL && KEY_FROM_LEGACY)
+) {
+  console.warn(
+    "[eval] DEPRECATION: OPEN_BRAIN_URL / OPEN_BRAIN_SERVICE_KEY are the " +
+    "legacy names. Prefer SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY — every " +
+    "other OB1 recipe uses those and the fallback will be removed in a future " +
+    "release.",
+  );
+}
+
+if (!OPENROUTER_KEY_RAW && ANTHROPIC_KEY_RAW) {
+  console.warn(
+    "[eval] Using ANTHROPIC_API_KEY as the OpenRouter bearer token. The " +
+    "openrouter grader calls openrouter.ai; if your ANTHROPIC_API_KEY is a " +
+    "real Anthropic key (not an OpenRouter alias) it will return 401. Set " +
+    "OPENROUTER_API_KEY explicitly, or use --grader stdin / --grader queue.",
+  );
+}
+
+const BASE_URL = (URL_FROM_CANONICAL ?? URL_FROM_LEGACY ?? "").replace(/\/+$/, "");
+const SERVICE_KEY = KEY_FROM_CANONICAL ?? KEY_FROM_LEGACY ?? "";
+const OPENROUTER_KEY = OPENROUTER_KEY_RAW || ANTHROPIC_KEY_RAW;
 
 if (!BASE_URL || !SERVICE_KEY) {
-  console.error("[eval] missing env. Set OPEN_BRAIN_URL and OPEN_BRAIN_SERVICE_KEY.");
+  console.error(
+    "[eval] missing env. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY. " +
+    "(Legacy OPEN_BRAIN_URL / OPEN_BRAIN_SERVICE_KEY are still accepted.)",
+  );
   process.exit(1);
 }
 
@@ -405,6 +446,18 @@ async function main() {
   }
 
   console.log(`[eval] grader=${args.grader} limit=${args.limit} model=${args.model}`);
+
+  // Fail fast on missing grader credentials — otherwise the script would
+  // fetch up to `limit` candidates plus one parents-lookup each, then
+  // explode on the first grader call. Cheap Supabase round-trips are
+  // still round-trips the operator didn't ask for.
+  if (args.grader === "openrouter" && !OPENROUTER_KEY) {
+    throw new Error(
+      "OPENROUTER_API_KEY (or ANTHROPIC_API_KEY aliased to an OpenRouter " +
+      "key) is required for --grader openrouter. Use --grader stdin or " +
+      "--grader queue for a no-key fallback.",
+    );
+  }
 
   const candidates = await fetchCandidates(args);
   if (candidates.length === 0) {
