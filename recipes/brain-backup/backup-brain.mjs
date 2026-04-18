@@ -92,6 +92,19 @@ const HEADERS = {
   Prefer: "count=exact",
 };
 
+// Bounded per-request timeout. Unattended backup jobs must either finish or
+// fail within a predictable window -- a hung connection should not keep a
+// cron job alive forever. 60s is generous for a 1000-row page; override with
+// FETCH_TIMEOUT_MS for slow tiers or very large tables.
+const FETCH_TIMEOUT_MS = (() => {
+  const raw =
+    process.env.FETCH_TIMEOUT_MS ||
+    envVars.FETCH_TIMEOUT_MS ||
+    "";
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+})();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -110,12 +123,31 @@ function humanSize(bytes) {
 async function fetchPage(table, orderBy, offset, limit) {
   const url = `${REST_BASE}/${table}?order=${orderBy}&limit=${limit}&offset=${offset}`;
   const rangeEnd = offset + limit - 1;
-  const res = await fetch(url, {
-    headers: {
-      ...HEADERS,
-      Range: `${offset}-${rangeEnd}`,
-    },
-  });
+
+  // Node 18+ fetch() has no default timeout. Wire up AbortController so a
+  // hung Supabase connection can't hang the whole backup run.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: {
+        ...HEADERS,
+        Range: `${offset}-${rangeEnd}`,
+      },
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error(
+        `PostgREST request for ${table} timed out after ${FETCH_TIMEOUT_MS} ms ` +
+        `(raise FETCH_TIMEOUT_MS if this table is legitimately slow)`
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 404) {
     // PostgREST returns 404 with `code: "PGRST205"` when the table is not in
