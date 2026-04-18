@@ -4,11 +4,12 @@
 
 ## What It Does
 
-This schema extension adds six new columns to the `thoughts` table (`type`, `sensitivity_tier`, `importance`, `quality_score`, `source_type`, `enriched`) so thoughts can be classified, filtered, and ranked without parsing the metadata JSONB every time. It also installs three RPC functions:
+This schema extension adds six new columns to the `thoughts` table (`type`, `sensitivity_tier`, `importance`, `quality_score`, `source_type`, `enriched`) so thoughts can be classified, filtered, and ranked without parsing the metadata JSONB every time. It also installs four RPC functions:
 
 - **`search_thoughts_text`** -- Full-text search with boolean operators, ILIKE fallback, pagination, and result counts.
 - **`brain_stats_aggregate`** -- Returns total thought count, top types, and top topics as a single JSONB payload.
 - **`get_thought_connections`** -- Finds thoughts that share metadata topics or people with a given thought.
+- **`backfill_thought_types(p_allowed_types TEXT[])`** -- Populates the new top-level `type` column from `metadata->>'type'`. The default allowlist covers the canonical eight values (`idea`, `task`, `person_note`, `reference`, `decision`, `lesson`, `meeting`, `journal`). Pass a custom array to accept additional values, or pass `NULL` to backfill whatever `metadata->>'type'` contains.
 
 ## Prerequisites
 
@@ -36,8 +37,8 @@ SUPABASE (from your Open Brain setup)
 2. Create a new query and paste the full contents of `schema.sql`
 3. Click **Run** to execute the migration
 4. Open **Table Editor** and select the `thoughts` table to confirm the new columns appear: `type`, `sensitivity_tier`, `importance`, `quality_score`, `source_type`, `enriched`
-5. Navigate to **Database > Functions** and verify three new functions exist: `search_thoughts_text`, `brain_stats_aggregate`, `get_thought_connections`
-6. If you have existing thoughts with `type` or `source` values stored in the metadata JSONB, the backfill statements at the bottom of the script will have populated the new columns automatically
+5. Navigate to **Database > Functions** and verify the new functions exist: `search_thoughts_text`, `brain_stats_aggregate`, `get_thought_connections`, `backfill_thought_types`
+6. If you have existing thoughts with `type` or `source` values stored in the metadata JSONB, the script automatically calls `backfill_thought_types()` with the default canonical allowlist. If your brain uses non-canonical `type` values, re-run `SELECT backfill_thought_types(ARRAY['your','custom','types']);` or `SELECT backfill_thought_types(NULL);` to accept any value
 
 ## Expected Outcome
 
@@ -51,8 +52,8 @@ After running the migration:
   - `type TEXT` (nullable; populated by backfill or writers)
   - `source_type TEXT` (nullable; populated by backfill or writers)
 - New indexes on `type`, `importance`, `source_type`, and a GIN tsvector index on `content` for fast full-text search.
-- Three new RPC functions callable via the Supabase client or REST API.
-- Any existing thoughts with `type` or `source` in their metadata JSONB will have those values copied into the new top-level columns.
+- Four new RPC functions callable via the Supabase client or REST API (`search_thoughts_text`, `brain_stats_aggregate`, `get_thought_connections`, `backfill_thought_types`).
+- Any existing thoughts with `type` or `source` in their metadata JSONB will have those values copied into the new top-level columns (via `backfill_thought_types()` for `type` with the canonical allowlist, plus an inline `UPDATE` for `source_type`).
 
 ## Security
 
@@ -73,4 +74,4 @@ Solution: These are safe to ignore. The `ADD COLUMN IF NOT EXISTS` syntax preven
 Solution: Confirm your thoughts have content populated. Try a simple query first (single word, no operators). If using boolean operators, ensure the syntax matches websearch format ("quoted phrases", word AND word, -excluded).
 
 **Issue: brain_stats_aggregate returns empty types or topics**
-Solution: The function filters by `created_at`. Pass `p_since_days := 0` for all-time stats. Also confirm that your thoughts have the `type` column populated (run the backfill UPDATE if needed).
+Solution: The function filters by `created_at`. Pass `p_since_days := 0` for all-time stats. Also confirm that your thoughts have the `type` column populated. If you use non-canonical type values in `metadata->>'type'` (anything outside `idea`, `task`, `person_note`, `reference`, `decision`, `lesson`, `meeting`, `journal`), call the backfill RPC with your own allowlist, e.g. `SELECT backfill_thought_types(ARRAY['idea','task','article','quote']);`, or `SELECT backfill_thought_types(NULL);` to accept whatever is present.

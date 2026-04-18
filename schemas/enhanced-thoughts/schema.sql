@@ -304,10 +304,42 @@ GRANT EXECUTE ON FUNCTION get_thought_connections(UUID, INT, BOOLEAN)
 --    exist. Safe to run multiple times (WHERE ... IS NULL guard).
 -- ============================================================
 
--- Backfill type from metadata
-UPDATE thoughts SET type = metadata->>'type'
-WHERE type IS NULL AND metadata->>'type' IS NOT NULL
-  AND metadata->>'type' IN ('idea','task','person_note','reference','decision','lesson','meeting','journal');
+-- Backfill `type` from metadata. Wrapped in an RPC so callers can
+-- override the allowlist. Default allowlist matches the canonical
+-- Open Brain type vocabulary; pass NULL to accept any string value
+-- present in metadata->>'type'.
+CREATE OR REPLACE FUNCTION backfill_thought_types(
+  p_allowed_types TEXT[] DEFAULT ARRAY[
+    'idea','task','person_note','reference',
+    'decision','lesson','meeting','journal'
+  ]
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+VOLATILE
+SET search_path = public
+AS $$
+DECLARE
+  v_updated BIGINT;
+BEGIN
+  UPDATE public.thoughts
+  SET type = metadata->>'type'
+  WHERE type IS NULL
+    AND metadata->>'type' IS NOT NULL
+    AND (p_allowed_types IS NULL OR metadata->>'type' = ANY(p_allowed_types));
+
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+  RETURN v_updated;
+END;
+$$;
+
+-- Do NOT grant to `anon`. This RPC writes to the thoughts table.
+GRANT EXECUTE ON FUNCTION backfill_thought_types(TEXT[])
+  TO authenticated, service_role;
+
+-- Run the backfill with the default allowlist so the paste-and-run
+-- flow still auto-populates `type` for canonical values.
+SELECT backfill_thought_types();
 
 -- Backfill source_type from metadata
 UPDATE thoughts SET source_type = metadata->>'source'
