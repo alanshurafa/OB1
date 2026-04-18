@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { TypeBadge } from "@/components/ThoughtCard";
 import { DeleteModal } from "@/components/DeleteModal";
@@ -50,6 +50,7 @@ export default function DuplicatesPage() {
     setError(null);
     const entries = Object.entries(selections);
     const removedKeys: string[] = [];
+    const failedKeys: string[] = [];
 
     for (const [key, action] of entries) {
       const pair = pairs.find((p) => pairKey(p) === key);
@@ -67,7 +68,8 @@ export default function DuplicatesPage() {
         if (!res.ok) throw new Error(`Failed for pair ${key}`);
         removedKeys.push(key);
       } catch {
-        // Continue with remaining — partial success is fine
+        // WR-03: surface per-pair failures instead of silently swallowing
+        failedKeys.push(key);
       }
     }
 
@@ -80,28 +82,42 @@ export default function DuplicatesPage() {
     });
     setBatchProcessing(false);
     setConfirmBatch(false);
+    // WR-03: Report partial-failure counts to the user.
+    if (failedKeys.length > 0) {
+      setError(
+        `Resolved ${removedKeys.length}/${entries.length} — ${failedKeys.length} failed. Try again or resolve them individually.`
+      );
+    }
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/duplicates?threshold=${threshold}&limit=${PER_PAGE}&offset=${offset}`
-      );
-      if (!res.ok) throw new Error("Failed to load");
-      const data = await res.json();
-      setPairs(data.pairs ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [threshold, offset]);
-
+  // Codex-P1-3: Resolve react-hooks/set-state-in-effect by keeping setLoading(true)
+  // OUT of useEffect — event handlers (threshold/offset changes) drive it.
   useEffect(() => {
-    load();
-  }, [load]);
+    const controller = new AbortController();
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/duplicates?threshold=${threshold}&limit=${PER_PAGE}&offset=${offset}`,
+          { signal: controller.signal }
+        );
+        if (!res.ok) throw new Error("Failed to load");
+        const data = await res.json();
+        if (!cancelled) setPairs(data.pairs ?? []);
+      } catch (err) {
+        if (cancelled || controller.signal.aborted) return;
+        setError(err instanceof Error ? err.message : "Load failed");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [threshold, offset]);
 
   const resolve = async (
     action: "keep_a" | "keep_b" | "keep_both",
@@ -167,6 +183,8 @@ export default function DuplicatesPage() {
           <select
             value={threshold}
             onChange={(e) => {
+              setLoading(true);
+              setError(null);
               setThreshold(parseFloat(e.target.value));
               setOffset(0);
               clearSelections();
@@ -403,14 +421,22 @@ export default function DuplicatesPage() {
           <div className="flex gap-2">
             <button
               disabled={offset <= 0}
-              onClick={() => setOffset((o) => Math.max(0, o - PER_PAGE))}
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                setOffset((o) => Math.max(0, o - PER_PAGE));
+              }}
               className="px-3 py-1.5 text-sm bg-bg-elevated border border-border rounded-lg text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-30"
             >
               Previous
             </button>
             <button
               disabled={pairs.length < PER_PAGE}
-              onClick={() => setOffset((o) => o + PER_PAGE)}
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                setOffset((o) => o + PER_PAGE);
+              }}
               className="px-3 py-1.5 text-sm bg-bg-elevated border border-border rounded-lg text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-30"
             >
               Next

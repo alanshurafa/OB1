@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { TypeBadge } from "@/components/ThoughtCard";
 import { DeleteModal } from "@/components/DeleteModal";
@@ -14,24 +14,47 @@ export default function AuditPage() {
   const [showDelete, setShowDelete] = useState(false);
   const [showFinalConfirm, setShowFinalConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/audit?page=${page}`);
-      if (!res.ok) throw new Error("Failed to load");
-      const d = await res.json();
-      setData(d);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [page]);
-
+  // Codex-P1-3: Resolve react-hooks/set-state-in-effect by keeping the effect
+  // side-effect-only on completion — setLoading(true) runs from event
+  // handlers (page change, reload), not from inside the effect body.
   useEffect(() => {
-    load();
-  }, [load]);
+    const controller = new AbortController();
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/audit?page=${page}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error("Failed to load");
+        const d = await res.json();
+        if (!cancelled) setData(d);
+      } catch (err) {
+        if (cancelled || controller.signal.aborted) return;
+        setError(err instanceof Error ? err.message : "Load failed");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [page, reloadTick]);
+
+  // Stable handle for event handlers to trigger a refetch.
+  const reload = useRef(() => {
+    setLoading(true);
+    setReloadTick((t) => t + 1);
+  }).current;
+
+  const changePage = (next: number) => {
+    setLoading(true);
+    setPage(next);
+  };
 
   const toggleSelect = (id: number) => {
     setSelected((prev) => {
@@ -62,7 +85,7 @@ export default function AuditPage() {
       setSelected(new Set());
       setShowFinalConfirm(false);
       setShowDelete(false);
-      load();
+      reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
     }
@@ -168,14 +191,14 @@ export default function AuditPage() {
           <div className="flex gap-2">
             <button
               disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
+              onClick={() => changePage(page - 1)}
               className="px-3 py-1.5 text-sm bg-bg-elevated border border-border rounded-lg text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-30"
             >
               Previous
             </button>
             <button
               disabled={page >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => changePage(page + 1)}
               className="px-3 py-1.5 text-sm bg-bg-elevated border border-border rounded-lg text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-30"
             >
               Next

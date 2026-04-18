@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AddToBrain } from "@/components/AddToBrain";
 import type { IngestionJob } from "@/lib/types";
 import { formatDate } from "@/lib/format";
@@ -17,23 +17,46 @@ const statusColor: Record<string, string> = {
 export default function AddToBrainPage() {
   const [jobs, setJobs] = useState<IngestionJob[]>([]);
   const [loading, setLoading] = useState(true);
+  const [reloadTick, setReloadTick] = useState(0);
 
-  const loadJobs = useCallback(async () => {
-    try {
-      const res = await fetch("/api/ingest");
-      if (!res.ok) throw new Error("Failed to load jobs");
-      const data = await res.json();
-      setJobs(data);
-    } catch {
-      // silently ignore — job list is secondary
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Codex-P1-3: Keep setLoading(true) OUT of useEffect. The effect only
+  // transitions loading to false on completion; event handlers (reload)
+  // set it to true synchronously.
+  // IN-06: fetchIngestionJobs signature drift — tolerate both shapes here
+  // (array vs { jobs: [...] }) so the client doesn't crash if the server
+  // contract changes.
   useEffect(() => {
-    loadJobs();
-  }, [loadJobs]);
+    const controller = new AbortController();
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/ingest", { signal: controller.signal });
+        if (!res.ok) throw new Error("Failed to load jobs");
+        const data = await res.json();
+        const normalized: IngestionJob[] = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.jobs)
+            ? data.jobs
+            : [];
+        if (!cancelled) setJobs(normalized);
+      } catch {
+        // silently ignore — job list is secondary
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [reloadTick]);
+
+  const loadJobs = useRef(() => {
+    setLoading(true);
+    setReloadTick((t) => t + 1);
+  }).current;
 
   return (
     <div className="space-y-8">
