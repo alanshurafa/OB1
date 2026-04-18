@@ -115,7 +115,7 @@ After the full pipeline:
 - Every derived artifact row has `derivation_layer = 'derived'` and `derivation_method = 'synthesis'`.
 - Rows whose artifact files expose thought IDs have a non-empty `derived_from` array.
 - Derived rows have `metadata.eval_score` and the three `eval_dimensions` set.
-- Two new MCP tools are live: `trace_provenance(thought_id, depth?)` and `find_derivatives(thought_id, limit?, exclude_restricted?)`.
+- Two new MCP tools are live: `trace_provenance(thought_id, depth?)` and `find_derivatives(thought_id, limit?)`. Restricted-tier rows are always filtered out by `find_derivatives` at the SQL layer — there is no caller-visible override.
 - Claude can now answer questions like:
   - "Show me the sources that feed into my March weekly digest."
   - "What wikis or digests cite the thought about the bug I fixed on Friday?"
@@ -171,7 +171,7 @@ Solution: Check that `OPENROUTER_API_KEY` is exported in the shell running `eval
 A: No — they serve different purposes. `sources_seen` tracks *where a thought came in from* (Slack, email, etc). `derived_from` tracks *which thoughts were synthesized into this one*. Both can coexist on the same row.
 
 **Q: What about sensitivity? Can a derived thought leak a restricted parent?**
-A: `trace_provenance` redacts restricted ancestors (content → NULL, `restricted=true` flag set on the node). `find_derivatives` excludes restricted rows by default; override with `exclude_restricted=false` if you're an admin tool. Sensitivity is enforced at the SQL layer, not just the MCP layer.
+A: `trace_provenance` redacts restricted ancestors (content → NULL, `restricted=true` flag set on the node). `find_derivatives` hardcodes the restricted filter at the SQL layer — the MCP tool exposes no caller-visible override. If you need an admin path that returns restricted rows, wire a separate service-role-only RPC in a private recipe. Sensitivity is enforced at the SQL layer, not just the MCP layer.
 
 **Q: Why JSONB array instead of a `thought_parents` join table?**
 A: One row per derived thought is simpler for the common query pattern (walk upward) and for recipes to write. The GIN index makes reverse lookup (`derived_from @> '[...]'`) fast enough for the sizes Open Brain targets (100K–1M thoughts). Swap to a join table later if provenance becomes a hot UI path.

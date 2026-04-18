@@ -15,8 +15,13 @@
 //   - `server`    instance of McpServer
 //   - `supabase`  createClient<...>(…, service_role_key)
 //   - `z`         imported from "npm:zod@3"
-//   - `toolSuccess(msg, data?)` and `toolFailure(msg)` helpers that return
-//     the standard MCP tool-result envelope
+//
+// Return envelopes are inlined as the literal
+//   { content: [{ type: "text", text: JSON.stringify(...) }] }
+// shape that the canonical server/index.ts uses — no toolSuccess /
+// toolFailure helper is required. Errors set `isError: true` on the
+// envelope and put a plain-text explanation in the content block so
+// Claude Desktop can render the failure inline.
 //
 // ---------------------------------------------------------------------------
 // Tool 1: trace_provenance
@@ -43,7 +48,12 @@ server.registerTool(
       const maxDepth = Math.min(Math.max(1, Number(raw.depth ?? 3) || 3), 10);
       const NODE_CAP = 250;
 
-      if (!rootId) return toolFailure("thought_id is required");
+      if (!rootId) {
+        return {
+          content: [{ type: "text", text: "thought_id is required" }],
+          isError: true,
+        };
+      }
 
       // Call the SQL helper. It returns a flat rowset, each row is one
       // visited thought with its depth, parent_id, and cycle flag.
@@ -54,7 +64,13 @@ server.registerTool(
       });
 
       if (error) {
-        return toolFailure(`trace_provenance failed: ${error.message}`);
+        return {
+          content: [{
+            type: "text",
+            text: `trace_provenance failed: ${error.message}`,
+          }],
+          isError: true,
+        };
       }
 
       type TraceRow = {
@@ -120,7 +136,10 @@ server.registerTool(
 
       const root = nodeById.get(rootId);
       if (!root) {
-        return toolFailure(`Thought ${rootId} not found`);
+        return {
+          content: [{ type: "text", text: `Thought ${rootId} not found` }],
+          isError: true,
+        };
       }
 
       const nodeCount = nodeById.size;
@@ -130,16 +149,27 @@ server.registerTool(
         (truncated ? `, truncated at node_cap=${NODE_CAP}` : "") +
         `).`;
 
-      return toolSuccess(summary, {
-        tree: root,
-        node_count: nodeCount,
-        depth_limit: maxDepth,
-        node_cap: NODE_CAP,
-        truncated,
-      });
+      // Return the summary line plus the full tree as pretty JSON in the
+      // same text block. Claude Desktop renders this cleanly and the
+      // caller can re-parse the JSON if needed.
+      return {
+        content: [{
+          type: "text",
+          text: `${summary}\n\n${JSON.stringify({
+            tree: root,
+            node_count: nodeCount,
+            depth_limit: maxDepth,
+            node_cap: NODE_CAP,
+            truncated,
+          }, null, 2)}`,
+        }],
+      };
     } catch (error) {
       console.error("trace_provenance failed", error);
-      return toolFailure(String(error));
+      return {
+        content: [{ type: "text", text: String(error) }],
+        isError: true,
+      };
     }
   },
 );
@@ -154,13 +184,11 @@ server.registerTool(
   {
     title: "Find Derivatives",
     description:
-      "Find all thoughts that were derived from this one (single-level reverse lookup). Answers 'what uses this thought?'",
+      "Find all thoughts that were derived from this one (single-level reverse lookup). Answers 'what uses this thought?'. Restricted-tier derivatives are always hidden — there is no caller-visible override.",
     inputSchema: z.object({
       thought_id: z.string().uuid().describe("UUID of the thought whose derivatives to find"),
       limit: z.number().int().min(1).max(500).optional()
         .describe("Max rows to return (default 100, max 500)"),
-      exclude_restricted: z.boolean().optional()
-        .describe("If true (default), restricted-tier derivatives are filtered out"),
     }),
   },
   async (params) => {
@@ -168,20 +196,31 @@ server.registerTool(
       const raw = params as Record<string, unknown>;
       const id = String(raw.thought_id ?? "").trim();
       const limit = Math.min(Math.max(1, Number(raw.limit ?? 100) || 100), 500);
-      const excludeRestricted = raw.exclude_restricted === undefined
-        ? true
-        : Boolean(raw.exclude_restricted);
 
-      if (!id) return toolFailure("thought_id is required");
+      if (!id) {
+        return {
+          content: [{ type: "text", text: "thought_id is required" }],
+          isError: true,
+        };
+      }
 
+      // The RPC hardcodes restricted-row filtering at the SQL layer (see
+      // schemas/provenance-chains/schema.sql). There is no parameter to
+      // pass through — callers that want restricted rows need a separate
+      // service-role-only admin path, which is out of scope here.
       const { data, error } = await supabase.rpc("find_derivatives", {
         p_thought_id: id,
         p_limit: limit,
-        p_exclude_restricted: excludeRestricted,
       });
 
       if (error) {
-        return toolFailure(`find_derivatives failed: ${error.message}`);
+        return {
+          content: [{
+            type: "text",
+            text: `find_derivatives failed: ${error.message}`,
+          }],
+          isError: true,
+        };
       }
 
       type DerivativeRow = {
@@ -204,14 +243,21 @@ server.registerTool(
             `  ${r.id} [${r.source_type ?? "?"}] ${String(r.content ?? "").slice(0, 100)}`
           ).join("\n");
 
-      return toolSuccess(summary, {
-        derivatives: rows,
-        count: rows.length,
-        exclude_restricted: excludeRestricted,
-      });
+      return {
+        content: [{
+          type: "text",
+          text: `${summary}\n\n${JSON.stringify({
+            derivatives: rows,
+            count: rows.length,
+          }, null, 2)}`,
+        }],
+      };
     } catch (error) {
       console.error("find_derivatives failed", error);
-      return toolFailure(String(error));
+      return {
+        content: [{ type: "text", text: String(error) }],
+        isError: true,
+      };
     }
   },
 );
