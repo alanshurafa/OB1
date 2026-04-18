@@ -359,9 +359,14 @@ Deno.serve(async (req) => {
         "/stats", "/entities", "/entities/:id", "/health"],
     }, 404);
   } catch (error) {
-    if (error instanceof SyntaxError) return json({ error: "Invalid JSON in request body" }, 400);
-    console.error("rest-api error", error);
-    return json({ error: String(error) }, 500);
+    if (error instanceof SyntaxError) return json({ error: "Invalid JSON in request body" }, 400, req);
+    // Never return the raw error string to the caller: PostgREST errors
+    // include table, column, and constraint names — and constraint errors
+    // under service-role access include data values. Correlate via
+    // error_id in Supabase function logs.
+    const errorId = crypto.randomUUID();
+    console.error(`rest-api error [${errorId}]`, error);
+    return json({ error: "internal_error", code: "GENERIC", error_id: errorId }, 500, req);
   }
 });
 
