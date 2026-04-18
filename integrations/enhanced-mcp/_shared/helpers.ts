@@ -878,6 +878,26 @@ export async function prepareThoughtPayload(
   };
 }
 
+// ── LIKE / ILIKE escaping ──────────────────────────────────────────────────
+
+/**
+ * Escape Postgres LIKE / ILIKE metacharacters so a user query can be safely
+ * interpolated into a `%...%` pattern.
+ *
+ * `%` and `_` are wildcards in ILIKE and `\` is the escape character; any
+ * of them in a user query will produce surprising match behavior. A search
+ * for "100%" without escaping expands to the ILIKE `%100%%` and matches
+ * everything that contains "100", capped only by LIMIT — effectively the
+ * whole table on dense graphs.
+ *
+ * Example:
+ *   escapeLikePattern("100%") === "100\\%"
+ *   escapeLikePattern("a_b")  === "a\\_b"
+ */
+export function escapeLikePattern(s: string): string {
+  return s.replace(/[\\%_]/g, (ch) => "\\" + ch);
+}
+
 // ── Supabase utility ───────────────────────────────────────────────────────
 
 /**

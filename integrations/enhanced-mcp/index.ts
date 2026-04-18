@@ -17,6 +17,7 @@ import {
   normalizeStringArray,
   safeEmbedding,
   tableExists,
+  escapeLikePattern,
   asString,
   asNumber,
   asInteger,
@@ -1107,12 +1108,16 @@ server.registerTool(
         );
       }
 
+      // Escape LIKE wildcards in the user query — unescaped `%` or `_` turns
+      // a search for "100%" into the ILIKE pattern `%100%%`, matching every
+      // entity whose name contains "100" instead of the literal substring.
+      const safeQuery = escapeLikePattern(query);
       let q = supabase
         .from("entities")
         .select(
           "id, entity_type, canonical_name, aliases, metadata, first_seen_at, last_seen_at",
         )
-        .ilike("canonical_name", `%${query}%`)
+        .ilike("canonical_name", `%${safeQuery}%`)
         .order("last_seen_at", { ascending: false })
         .limit(limit);
 
