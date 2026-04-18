@@ -43,7 +43,14 @@ function loadEnvFile() {
   const envPath = path.join(SCRIPT_DIR, ".env.local");
   const vars = {};
   if (fs.existsSync(envPath)) {
-    for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
+    let isFirstLine = true;
+    for (let line of fs.readFileSync(envPath, "utf8").split("\n")) {
+      // Strip UTF-8 BOM from the first line -- Notepad and some VS Code
+      // configurations on Windows write it, which would otherwise poison
+      // the first key name (e.g. "\uFEFFSUPABASE_URL") and cause a
+      // confusing "SUPABASE_URL not found" even though it's right there.
+      if (isFirstLine && line.charCodeAt(0) === 0xFEFF) line = line.slice(1);
+      isFirstLine = false;
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
       const eqIdx = trimmed.indexOf("=");
