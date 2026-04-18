@@ -1,6 +1,6 @@
 {
   "name": "Brain Smoke Test",
-  "description": "28-check smoke harness verifying a fresh Open Brain install: REST API, MCP, DB schema, auth, health.",
+  "description": "30-check smoke harness verifying a fresh Open Brain install: REST API, MCP, DB schema, auth, health.",
   "category": "recipes",
   "author": {
     "name": "Alan Shurafa",
