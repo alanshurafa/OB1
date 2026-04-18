@@ -68,7 +68,7 @@ When you click **Save & Grant Permission**, Chrome shows a native permission pro
 **Storage details:**
 - API key → `chrome.storage.local` (per-device only, **never** synced across Chrome profiles)
 - API URL (`apiEndpoint`) → `chrome.storage.local` (per-device only). Rationale: the URL alone isn't a secret, but combining it with your Google-account-wide synced profiles would let anyone signed into the same Google account on a shared or loaner laptop see a pre-filled target for your Open Brain. Treating the endpoint as per-device avoids that surface, and also sidesteps `chrome.storage.sync`'s 8KB-per-item quota, which could silently reject saves for very long URLs.
-- Platform toggles + capture mode + minimum response length → `chrome.storage.sync` (follows your Google account across devices). If `chrome.storage.sync` is unavailable (policy-managed profile, sync disabled, or quota exceeded) the extension transparently falls back to `chrome.storage.local` so saves never silently fail.
+- Platform toggles (ChatGPT / Claude / Gemini) → `chrome.storage.sync` (follows your Google account across devices). If `chrome.storage.sync` is unavailable (policy-managed profile, sync disabled, or quota exceeded) the extension transparently falls back to `chrome.storage.local` so saves never silently fail.
 
 ## Usage
 
@@ -130,7 +130,7 @@ This extension uses **`optional_host_permissions` + runtime `chrome.permissions.
 | `host_permissions: ["<all_urls>"]` | One-line manifest, no prompt flow | Chrome Web Store flags it as a high-risk permission, install-time prompt scares users, extension can hit any site |
 | `optional_host_permissions` + runtime request (chosen) | Minimum-viable permissions, user sees exactly which origin they're granting, survives Chrome Web Store review | Requires a Configure screen + one extra click during setup |
 
-The extension declares `optional_host_permissions: ["https://*/*", "http://*/*"]` in the manifest. On the Configure screen it parses the user's URL, derives an origin pattern like `https://your-project-ref.supabase.co/*`, and calls `chrome.permissions.request({ origins: [origin] })`. The user approves once; Chrome persists the grant; the service worker can now `fetch()` that origin. Nothing else.
+The extension declares `optional_host_permissions: ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]` in the manifest — the HTTPS wildcard covers public deployments, and the two loopback HTTP entries exist so local dev setups (e.g. `http://localhost:54321`) work without dropping TLS requirements for everyone else. On the Configure screen the extension parses the user's URL, derives an origin pattern like `https://your-project-ref.supabase.co/*`, and calls `chrome.permissions.request({ origins: [origin] })`. The user approves once; Chrome persists the grant; the service worker can now `fetch()` that origin. Nothing else.
 
 The `content_scripts` entries for `claude.ai`, `chatgpt.com`, and `gemini.google.com` remain as normal `host_permissions` because the content scripts inject at `document_idle` on page load — they can't wait for a runtime prompt. Those three origins are scoped narrowly and visible in the install dialog.
 
