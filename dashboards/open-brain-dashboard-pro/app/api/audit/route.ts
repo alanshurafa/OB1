@@ -32,9 +32,8 @@ export async function GET(request: NextRequest) {
     });
     return NextResponse.json(data);
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed" },
-      { status: 500 }
-    );
+    // WR-05: Log detail server-side, return generic to client
+    console.error("[audit]", err);
+    return NextResponse.json({ error: "Failed" }, { status: 500 });
   }
 }

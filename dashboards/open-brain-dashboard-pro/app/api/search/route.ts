@@ -29,9 +29,8 @@ export async function GET(request: NextRequest) {
     const data = await searchThoughts(apiKey, q, mode, 100, page, excludeRestricted);
     return NextResponse.json(data);
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Search failed" },
-      { status: 500 }
-    );
+    // WR-05: Log detail server-side, return generic to client
+    console.error("[search]", err);
+    return NextResponse.json({ error: "Search failed" }, { status: 500 });
   }
 }

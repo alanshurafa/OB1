@@ -58,10 +58,9 @@ export async function GET() {
     const jobs = await fetchIngestionJobs(apiKey);
     return NextResponse.json(jobs);
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed" },
-      { status: 500 }
-    );
+    // WR-05: Log detail server-side, return generic to client
+    console.error("[ingest]", err);
+    return NextResponse.json({ error: "Failed" }, { status: 500 });
   }
 }
 
@@ -126,9 +125,8 @@ export async function POST(request: NextRequest) {
         : `Extracted thoughts from your input`,
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed" },
-      { status: 500 }
-    );
+    // WR-05: Log detail server-side, return generic to client
+    console.error("[ingest]", err);
+    return NextResponse.json({ error: "Failed" }, { status: 500 });
   }
 }

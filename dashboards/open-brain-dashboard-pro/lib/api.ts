@@ -13,6 +13,22 @@ if (!API_URL) {
   );
 }
 
+// WR-06: validate NEXT_PUBLIC_API_URL shape at module load. Refuse non-https
+// URLs (except localhost for dev) to prevent the cookie-authed API key from
+// being fanned out to an attacker-controlled host via a misconfigured env var.
+try {
+  const parsed = new URL(API_URL);
+  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+    throw new Error(
+      "NEXT_PUBLIC_API_URL must use https:// (or http://localhost for dev)"
+    );
+  }
+} catch (err) {
+  throw new Error(
+    `NEXT_PUBLIC_API_URL is not a valid URL: ${err instanceof Error ? err.message : String(err)}`
+  );
+}
+
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
     super(message);
