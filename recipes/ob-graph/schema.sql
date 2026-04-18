@@ -359,3 +359,12 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.graph_nodes TO service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.graph_edges TO service_role;
+
+-- ============================================================================
+-- Lock down internal helper
+-- reconstruct_bfs_path is plumbing for find_shortest_path (and any future
+-- BFS helper). It should not be exposed as a PostgREST RPC to anon or
+-- authenticated roles — only server-side callers (service_role) need it.
+-- ============================================================================
+REVOKE ALL ON FUNCTION public.reconstruct_bfs_path(jsonb, uuid, uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.reconstruct_bfs_path(jsonb, uuid, uuid) TO service_role;
