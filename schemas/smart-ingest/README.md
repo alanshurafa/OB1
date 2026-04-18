@@ -13,8 +13,7 @@ This schema adds two tables and one RPC function that together support a structu
 ## Prerequisites
 
 - Working Open Brain setup (see the getting-started guide in `docs/01-getting-started.md`)
-- Supabase project with the `thoughts` table, `match_thoughts` function, and `upsert_thought` function already created
-- Enhanced thoughts schema applied (see `schemas/enhanced-thoughts/`)
+- Supabase project with the core `thoughts` table created (the SQL only reads and writes `thoughts.id` and `thoughts.metadata`, so no additional schema extensions are required)
 
 ## Credential Tracker
 
@@ -52,7 +51,7 @@ After running the migration:
 - Two new tables: `ingestion_jobs` (tracks job lifecycle with status, counters, and metadata) and `ingestion_items` (stores extracted thoughts with action codes, dedup reasons, and execution results).
 - One index on `ingestion_items(job_id)` for fast job-to-item lookups.
 - One RPC function `append_thought_evidence(bigint, jsonb)` that idempotently appends evidence entries to a thought's metadata.
-- Service role has full access to both tables and their sequences. The RPC function is callable by authenticated, anonymous, and service role clients.
+- Service role has full access to both tables and their sequences. The `append_thought_evidence` RPC is **service-role only** — it is `SECURITY DEFINER` and bypasses RLS on `thoughts`, so it is revoked from `public` and granted only to `service_role`. The companion Edge Function (`integrations/smart-ingest/`) must call it with the Supabase service role key, never the anon key.
 
 ## Troubleshooting
 
