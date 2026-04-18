@@ -43,7 +43,13 @@ SUPABASE (from your Open Brain setup)
 
 After running the migration:
 
-- The `thoughts` table has six new columns with sensible defaults (importance=5, quality_score=0.50, sensitivity_tier='normal', enriched=false).
+- The `thoughts` table has six new columns with sensible defaults:
+  - `sensitivity_tier TEXT DEFAULT 'standard'` (canonical values: `'standard'`, `'personal'`, `'restricted'`)
+  - `importance SMALLINT DEFAULT 3` (scale: 1-5, where 3 is the default)
+  - `quality_score NUMERIC(5,2) DEFAULT 50` (scale: 0-100, where 50 is the default)
+  - `enriched BOOLEAN DEFAULT false`
+  - `type TEXT` (nullable; populated by backfill or writers)
+  - `source_type TEXT` (nullable; populated by backfill or writers)
 - New indexes on `type`, `importance`, `source_type`, and a GIN tsvector index on `content` for fast full-text search.
 - Three new RPC functions callable via the Supabase client or REST API.
 - Any existing thoughts with `type` or `source` in their metadata JSONB will have those values copied into the new top-level columns.

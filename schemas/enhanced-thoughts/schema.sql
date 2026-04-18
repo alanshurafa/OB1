@@ -112,8 +112,10 @@ BEGIN
             ELSE 0
           END
         )
-        + (coalesce(t.importance, 5) / 20.0)::real
-        + (coalesce(t.quality_score, 0.50) / 500.0)::real
+        -- importance is 1..5; max bonus 5/20 = 0.25
+        + (coalesce(t.importance, 3) / 20.0)::real
+        -- quality_score is 0..100; max bonus 100/500 = 0.20
+        + (coalesce(t.quality_score, 50) / 500.0)::real
       )::real AS rank
     FROM public.thoughts t
     CROSS JOIN query_input q
