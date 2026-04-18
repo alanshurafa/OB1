@@ -81,18 +81,30 @@ function parseArgs(argv) {
     llmModel: "anthropic/claude-haiku-4-5",
     verbose: false,
   };
+
+  // Parse a numeric flag value WITHOUT rewriting valid zero/negative values.
+  // Plain `Number(x) || default` fails for 0 — e.g. `--max-llm-calls=0` (the
+  // documented hard-off switch for Tier 3) would be silently rewritten to the
+  // default, still making paid LLM calls. This helper only applies the default
+  // when the parsed value is genuinely missing or non-numeric.
+  function parseNumberFlag(raw, defaultValue) {
+    if (raw === undefined || raw === null || raw === "") return defaultValue;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : defaultValue;
+  }
+
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--tier=")) args.tier = a.slice(7);
     else if (a === "--tier") args.tier = argv[++i];
-    else if (a.startsWith("--sample-size=")) args.sampleSize = Number(a.slice(14)) || 100;
-    else if (a === "--sample-size") args.sampleSize = Number(argv[++i]) || 100;
-    else if (a.startsWith("--max-llm-calls=")) args.maxLlmCalls = Number(a.slice(16)) || 5;
-    else if (a === "--max-llm-calls") args.maxLlmCalls = Number(argv[++i]) || 5;
+    else if (a.startsWith("--sample-size=")) args.sampleSize = parseNumberFlag(a.slice(14), 100);
+    else if (a === "--sample-size") args.sampleSize = parseNumberFlag(argv[++i], 100);
+    else if (a.startsWith("--max-llm-calls=")) args.maxLlmCalls = parseNumberFlag(a.slice(16), 5);
+    else if (a === "--max-llm-calls") args.maxLlmCalls = parseNumberFlag(argv[++i], 5);
     else if (a.startsWith("--report=")) args.report = a.slice(9);
     else if (a === "--report") args.report = argv[++i];
-    else if (a.startsWith("--days=")) args.days = Number(a.slice(7)) || 365;
-    else if (a === "--days") args.days = Number(argv[++i]) || 365;
+    else if (a.startsWith("--days=")) args.days = parseNumberFlag(a.slice(7), 365);
+    else if (a === "--days") args.days = parseNumberFlag(argv[++i], 365);
     else if (a.startsWith("--llm-model=")) args.llmModel = a.slice(12);
     else if (a === "--llm-model") args.llmModel = argv[++i];
     else if (a === "--verbose" || a === "-v") args.verbose = true;
