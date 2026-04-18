@@ -100,6 +100,8 @@ The dashboard calls these endpoints on your Open Brain REST gateway (all authent
 
 ## Deployment
 
+> **A note on `proxy.ts` vs `middleware.ts` (Cloudflare caveat).** This dashboard uses the Next.js 16 `proxy.ts` convention (the older `middleware.ts` is deprecated). There is a known issue ([vercel/next.js#86122](https://github.com/vercel/next.js/issues/86122)) where `proxy.ts` does not execute in production behind Cloudflare Proxy, while `middleware.ts` does. Auth in this dashboard is enforced server-side on every server component and API route, so `proxy.ts` is defense-in-depth only and the app remains secure if it never runs. If your deploy target is Cloudflare and you want the extra redirect layer active, rename `proxy.ts` back to `middleware.ts` (and rename the exported `proxy` function to `middleware`). You'll get a Next.js deprecation warning at build time, but the redirect logic will fire. Vercel, Netlify, and standalone Node.js hosting work correctly with `proxy.ts` as-shipped.
+
 ### Vercel
 
 1. Import the `dashboards/open-brain-dashboard-pro/` folder as a new project (or use `vercel link` from inside it).
