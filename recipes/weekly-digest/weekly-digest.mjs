@@ -68,14 +68,18 @@ function parseArgs(argv) {
     minImportance: 4,
     model: DEFAULT_MODEL,
     output: "telegram",
+    outputExplicit: false,
     includePersonal: false,
     dryRun: false,
+    noSensitivityFilter: false,
   };
   for (const raw of argv) {
     if (raw === "--dry-run") {
       args.dryRun = true;
     } else if (raw === "--include-personal") {
       args.includePersonal = true;
+    } else if (raw === "--no-sensitivity-filter") {
+      args.noSensitivityFilter = true;
     } else if (raw.startsWith("--window=")) {
       const n = Number(raw.slice("--window=".length));
       if (!Number.isFinite(n) || n <= 0) {
@@ -97,6 +101,7 @@ function parseArgs(argv) {
         throw new Error(`--output must be telegram|stdout|file, got: ${val}`);
       }
       args.output = val;
+      args.outputExplicit = true;
     } else if (raw === "--help" || raw === "-h") {
       printHelp();
       process.exit(0);
@@ -121,6 +126,9 @@ function printHelp() {
       "                            Aliases: opus, sonnet, haiku",
       "  --output=<mode>           telegram | stdout | file (default: telegram)",
       "  --include-personal        Include sensitivity_tier=personal thoughts",
+      "  --no-sensitivity-filter   UNSAFE: run without sensitivity_tier filter.",
+      "                            Use only when you accept that restricted/personal",
+      "                            thoughts will be sent to the LLM + delivery target.",
       "  --dry-run                 Synthesize + print, deliver nothing",
       "  -h, --help                Show this help",
     ].join("\n"),
@@ -183,15 +191,34 @@ function loadConfig(args) {
  * this recipe runnable on a stock Open Brain without requiring a custom
  * REST gateway edge function.
  */
-async function fetchThoughts(cfg, { windowDays, includePersonal }) {
+async function fetchThoughts(cfg, { windowDays, includePersonal, noSensitivityFilter }) {
   const sinceIso = new Date(Date.now() - windowDays * 86_400_000).toISOString();
 
   // Build the sensitivity exclusion list. sensitivity_tier is a TEXT column
   // added by the sensitivity-tiers primitive; if a given Open Brain install
-  // doesn't have it, PostgREST will 400 and we fall back to a query with no
-  // sensitivity filter (see fallback below).
+  // doesn't have it, PostgREST will 400 and we FAIL CLOSED by default to
+  // protect the privacy boundary the README promises ("restricted never
+  // leaves the database"). The user can opt out with --no-sensitivity-filter
+  // if they accept the leakage risk and explicitly want to run unfiltered.
   const excluded = includePersonal ? ["restricted"] : ["restricted", "personal"];
-  const excludeFilter = `&sensitivity_tier=not.in.(${excluded.join(",")})`;
+  // When --no-sensitivity-filter is set, skip the filter entirely so a missing
+  // column won't trip the 400. Otherwise, apply the exclusion filter.
+  const selectCols = noSensitivityFilter
+    ? "id,content,created_at,importance,metadata"
+    : "id,content,created_at,importance,metadata,sensitivity_tier";
+  const excludeFilter = noSensitivityFilter
+    ? ""
+    : `&sensitivity_tier=not.in.(${excluded.join(",")})`;
+
+  if (noSensitivityFilter) {
+    console.warn(
+      "[weekly-digest] WARNING: --no-sensitivity-filter is set. " +
+        "ALL thoughts (including any that would be tagged restricted/personal) " +
+        "will be sent to the LLM and delivery target. You have accepted the " +
+        "data-leakage risk. Do NOT use this flag on a brain that contains " +
+        "secrets, health data, or other material you don't want exfiltrated.",
+    );
+  }
 
   const headers = {
     apikey: cfg.serviceKey,
@@ -199,34 +226,45 @@ async function fetchThoughts(cfg, { windowDays, includePersonal }) {
   };
 
   const all = [];
-  let useFilter = true;
 
   for (let offset = 0; offset < FETCH_HARD_CAP; offset += PAGE_SIZE) {
     const limit = Math.min(PAGE_SIZE, FETCH_HARD_CAP - offset);
     const url =
       `${cfg.baseUrl}/rest/v1/thoughts` +
-      `?select=id,content,created_at,importance,metadata,sensitivity_tier` +
+      `?select=${selectCols}` +
       `&created_at=gte.${sinceIso}` +
       `&order=created_at.desc` +
       `&limit=${limit}&offset=${offset}` +
-      (useFilter ? excludeFilter : "");
+      excludeFilter;
 
     const res = await fetch(url, { headers });
 
     // If sensitivity_tier column doesn't exist on this install, PostgREST
-    // returns 400 with "column does not exist". Retry once without filter
-    // and warn — the user may not have the sensitivity-tiers primitive yet.
-    if (!res.ok && useFilter && res.status === 400) {
+    // returns 400 with "column does not exist". FAIL CLOSED: do not retry
+    // unfiltered, because that would silently leak restricted/personal
+    // thoughts on a brain that relies on the primitive's promise. Print a
+    // clear error and instruct the user how to proceed.
+    if (!res.ok && !noSensitivityFilter && res.status === 400) {
       const text = await res.text();
       if (/sensitivity_tier/.test(text)) {
-        console.warn(
-          "[weekly-digest] sensitivity_tier column not found — " +
-            "falling back to unfiltered query. Install the sensitivity-tiers " +
-            "primitive to enable restricted/personal filtering.",
+        console.error(
+          "[weekly-digest] FATAL: sensitivity_tier column not found on public.thoughts.\n" +
+            "\n" +
+            "This recipe refuses to run unfiltered because the README promises\n" +
+            "that restricted thoughts never leave the database. Running without\n" +
+            "the column would silently send every row — including anything you\n" +
+            "would have tagged restricted/personal — to the LLM and delivery target.\n" +
+            "\n" +
+            "You have two options:\n" +
+            "  1. (Recommended) Install a sensitivity-tiers migration that adds the\n" +
+            "     `sensitivity_tier TEXT` column to public.thoughts, then re-run.\n" +
+            "  2. Pass --no-sensitivity-filter to explicitly accept that ALL thoughts\n" +
+            "     in the window will be exfiltrated. Do NOT do this on a brain that\n" +
+            "     holds secrets, credentials, health data, or private correspondence.\n" +
+            "\n" +
+            "PostgREST error detail: " + text,
         );
-        useFilter = false;
-        offset -= PAGE_SIZE; // retry this page without the filter
-        continue;
+        process.exit(1);
       }
       throw new Error(`thoughts fetch failed: ${res.status} ${text}`);
     }
@@ -443,6 +481,7 @@ async function main() {
   const pool = await fetchThoughts(cfg, {
     windowDays: args.window,
     includePersonal: args.includePersonal,
+    noSensitivityFilter: args.noSensitivityFilter,
   });
   console.log(`[weekly-digest] fetched ${pool.length} thoughts from window`);
 
