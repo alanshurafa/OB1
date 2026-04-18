@@ -152,6 +152,13 @@ export default function DuplicatesPage() {
             )
         )
       );
+      // REVIEW-CODEX-6 P2: prune selections so the toolbar count and
+      // later batch replay don't hit an already-resolved pair.
+      setSelections((prev) => {
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Resolve failed");
     } finally {
