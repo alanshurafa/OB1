@@ -48,10 +48,35 @@ SUPABASE (from your Open Brain setup)
 
 After running the migration:
 
-- Two new tables: `ingestion_jobs` (tracks job lifecycle with status, counters, and metadata) and `ingestion_items` (stores extracted thoughts with action codes, dedup reasons, and execution results).
-- One index on `ingestion_items(job_id)` for fast job-to-item lookups.
+- Two new tables: `ingestion_jobs` (tracks job lifecycle with status, counters, and metadata) and `ingestion_items` (stores extracted thoughts with action codes, dedup reasons, and execution results). Both tables include a nullable `user_id uuid` column; on Supabase it references `auth.users(id) ON DELETE CASCADE`.
+- Three indexes: `ingestion_items_job_idx` on `ingestion_items(job_id)` for fast job-to-item lookups, plus partial indexes `idx_ingestion_jobs_pending` (jobs in `status = 'pending'`) and `idx_ingestion_items_pending` (items in `status IN ('pending','ready')`) to keep the worker's queue polling small.
+- Row Level Security enabled on both tables with a `service_role ALL` policy on each, and — on Supabase — an `authenticated SELECT` policy scoped to `user_id = auth.uid()` so a signed-in user can read only their own rows.
 - One RPC function `append_thought_evidence(bigint, jsonb)` that idempotently appends evidence entries to a thought's metadata.
 - Service role has full access to both tables and their sequences. The `append_thought_evidence` RPC is **service-role only** — it is `SECURITY DEFINER` and bypasses RLS on `thoughts`, so it is revoked from `public` and granted only to `service_role`. The companion Edge Function (`integrations/smart-ingest/`) must call it with the Supabase service role key, never the anon key.
+
+## Job Claim Semantics
+
+This schema intentionally does **not** ship a SQL-side `claim_next_ingestion_job()` RPC. Job claiming and item claiming live in the companion Edge Function under `integrations/smart-ingest/`, which reads and mutates `ingestion_jobs` / `ingestion_items` directly using the service role key.
+
+Any worker that claims a job or an item **must** use `FOR UPDATE SKIP LOCKED` semantics so two concurrent workers cannot grab the same row. The recommended pattern is a single `UPDATE ... RETURNING *` statement against a sub-select that does the locking:
+
+```sql
+UPDATE public.ingestion_jobs
+   SET status = 'extracting'
+ WHERE id = (
+   SELECT id
+     FROM public.ingestion_jobs
+    WHERE status = 'pending'
+    ORDER BY created_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+ )
+RETURNING *;
+```
+
+The same shape (with `status IN ('pending','ready')` and an appropriate next-state) applies to claiming the next item within a job. The partial indexes added by this migration (`idx_ingestion_jobs_pending`, `idx_ingestion_items_pending`) are designed for exactly this query.
+
+If you are building a custom worker, do not replace `FOR UPDATE SKIP LOCKED` with a plain `SELECT`-then-`UPDATE` — that is a lost-update race under concurrency, and the whole ingest pipeline assumes at-most-one-worker-per-row semantics.
 
 ## Troubleshooting
 
