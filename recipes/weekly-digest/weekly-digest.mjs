@@ -262,9 +262,17 @@ async function fetchThoughts(cfg, { windowDays, includePersonal, noSensitivityFi
       : (noSensitivityFilter
           ? "id,content,created_at,metadata"
           : "id,content,created_at,metadata,sensitivity_tier");
+  // PostgREST OR filter: include rows with NULL sensitivity_tier AND rows
+  // whose tier is not in the excluded set. A bare `not.in.(...)` follows
+  // Postgres NOT IN semantics, which silently drops NULL rows — that would
+  // hide every untagged thought on installs that added the column without
+  // backfilling old rows to 'standard'. The README promises NULL/standard
+  // is included, so we union the two branches here. Values inside the
+  // `in.(...)` list are not quoted in PostgREST's compact filter syntax;
+  // keep `excluded` as bare lowercase identifiers that need no escaping.
   const excludeFilter = noSensitivityFilter
     ? ""
-    : `&sensitivity_tier=not.in.(${excluded.join(",")})`;
+    : `&or=(sensitivity_tier.is.null,sensitivity_tier.not.in.(${excluded.join(",")}))`;
 
   if (noSensitivityFilter) {
     console.warn(

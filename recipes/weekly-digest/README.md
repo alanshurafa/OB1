@@ -127,7 +127,7 @@ This recipe expects a `sensitivity_tier TEXT` column on `public.thoughts` with v
 
 - **`restricted`** — never included. These are thoughts you've explicitly flagged as off-limits; a synthesis pass that surfaces them to a Telegram chat defeats the purpose of the tier.
 - **`personal`** — excluded by default. Your week probably contains private material (health, relationships, finances) that you'd rather not summarize over an unencrypted wire to a third-party API. Pass `--include-personal` when you want the fuller picture — e.g., a private file output you keep locally.
-- **`standard`** (or null) — always included.
+- **`standard`** (or `NULL`) — always included. The filter uses a PostgREST `or=(sensitivity_tier.is.null, sensitivity_tier.not.in.(...))` composite so rows with `NULL` tiers are explicitly unioned in. (Postgres `NOT IN` alone silently drops `NULL` rows, which would hide untagged thoughts on an install that added the column without backfilling old rows.)
 
 **Fail-closed behavior on stock OB1:** if the `sensitivity_tier` column is not present (e.g., a vanilla Open Brain install), the recipe **refuses to run** and prints instructions. It does not silently fall back to an unfiltered query, because that would violate the guarantee below. To override this safety net — at your own risk — pass `--no-sensitivity-filter`; the script will print a loud warning and send every row in the window to the LLM and delivery target.
 
