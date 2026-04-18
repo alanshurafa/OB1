@@ -269,7 +269,7 @@ server.registerTool(
           content: [
             {
               type: "text" as const,
-              text: `Captured synthesis #${thoughtId} from ${sourceIds.length} source thoughts (embedding update failed — searchable text still saved; call reembed_thought to retry: ${embError.message})`,
+              text: `Captured synthesis #${thoughtId} from ${sourceIds.length} source thoughts (embedding update failed — searchable text still saved; call capture_synthesis again if the problem persists, contact your admin, or check the Open Brain embedding service: ${embError.message})`,
             },
           ],
         };
