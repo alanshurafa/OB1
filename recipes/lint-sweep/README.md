@@ -214,7 +214,7 @@ Tier 3 is the only billed component. Using the default `anthropic/claude-haiku-4
 | 500  | 25  | ~$0.10 |
 | 1000 | 50  | ~$0.20 |
 
-Pick a smaller, faster model (`anthropic/claude-haiku-4-5`) for cheap sweeps or a stronger one (`anthropic/claude-sonnet-4-5`) for weekly deep audits. The script does not retry on failure — a bad response aborts the run and leaves you with a partial report rather than silently burning credits.
+Pick a smaller, faster model (`anthropic/claude-haiku-4-5`) for cheap sweeps or a stronger one (`anthropic/claude-sonnet-4-5`) for weekly deep audits. The script does not retry on failure — a Tier 3 parse failure aborts the run before any report is written, so you get no file at all rather than silently burning credits on a flaky model. If you want Tier 1/2 output without any Tier 3 risk, run with `--max-llm-calls=0` (Tier 3 skips with a logged reason and the report is still written).
 
 Set `--max-llm-calls=0` to disable Tier 3 explicitly without needing to edit the tier flag, and omit the `OPENROUTER_API_KEY` entirely to make Tier 3 skip with a logged reason.
 
