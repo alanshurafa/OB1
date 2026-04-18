@@ -59,33 +59,22 @@ ALTER TABLE public.thoughts
   ADD CONSTRAINT thoughts_derivation_method_check
   CHECK (derivation_method IS NULL OR derivation_method = 'synthesis');
 
--- derived_from must be NULL or a JSON array of UUID-shaped strings. The array
--- shape is checked first (cheap, preserves prior behaviour). The element
--- predicate then asserts every element is a JSON string matching the RFC
--- 4122 UUID format — catches bad writes at INSERT/UPDATE time with a clear
--- constraint name instead of letting trace_provenance fail later with
--- 22P02 invalid input syntax during the ::uuid cast inside the recursive
--- CTE. Using NOT EXISTS over jsonb_array_elements keeps the check immutable
--- and lets any non-string or non-UUID element trip the constraint.
+-- derived_from must be NULL or a JSON array. PostgreSQL forbids subqueries in
+-- CHECK constraints, so element-level UUID validation cannot live here — it is
+-- enforced by the recipe scripts (backfill.mjs rejects non-UUID refs loudly
+-- before writing) and, at read time, by the ::uuid casts inside
+-- trace_provenance / find_derivatives, which surface any non-UUID element as
+-- a 22P02 error. See schemas/provenance-chains/README.md for details.
 ALTER TABLE public.thoughts
   DROP CONSTRAINT IF EXISTS thoughts_derived_from_is_array_check;
 ALTER TABLE public.thoughts
   ADD CONSTRAINT thoughts_derived_from_is_array_check
   CHECK (derived_from IS NULL OR jsonb_typeof(derived_from) = 'array');
 
+-- Drop the legacy element-level check if it exists from an older install —
+-- PostgreSQL rejects its subquery predicate and the migration would fail.
 ALTER TABLE public.thoughts
   DROP CONSTRAINT IF EXISTS thoughts_derived_from_uuid_elements_check;
-ALTER TABLE public.thoughts
-  ADD CONSTRAINT thoughts_derived_from_uuid_elements_check
-  CHECK (
-    derived_from IS NULL
-    OR NOT EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(derived_from) AS e
-      WHERE jsonb_typeof(e) <> 'string'
-         OR NOT ((e #>> '{}') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-    )
-  );
 
 -- ============================================================
 -- 3. INDEXES

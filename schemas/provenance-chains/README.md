@@ -31,6 +31,15 @@ The helpers `trace_provenance` and `find_derivatives` surface three fields — `
 
 The four new columns (`derived_from`, `derivation_method`, `derivation_layer`, `supersedes`) are plain columns on `public.thoughts`. Row-level security operates at the row granularity, not the column granularity, so any policies you already have on `public.thoughts` continue to apply unchanged — the new columns are simply returned or withheld alongside the rest of the row. If you need to hide specific columns from certain roles, use PostgREST's `select` column grants or a dedicated view. The helper functions are `SECURITY DEFINER` and granted to `service_role` only, so they run outside the caller's RLS context by design.
 
+### `derived_from` validation
+
+The migration only enforces that `derived_from` is NULL or a JSON array (`thoughts_derived_from_is_array_check`). Element-level UUID validation is **not** a database constraint — PostgreSQL forbids subqueries in `CHECK` predicates, so a per-element type/format check cannot live on the table. Validation is split across two application-layer choke points instead:
+
+- **Write time:** `recipes/provenance-chains/backfill.mjs` rejects any non-UUID ref (e.g., legacy `#123` integer references) with a clear error before it calls PATCH, so nothing malformed reaches PostgREST.
+- **Read time:** `trace_provenance` casts each element to `::uuid` inside its recursive CTE and `find_derivatives` compares against a UUID-typed needle, so any non-UUID element that slips in surfaces as a `22P02 invalid_text_representation` error instead of silent bad output.
+
+If you write to `derived_from` from code outside this recipe, mirror the UUID check before the PATCH.
+
 ## Credential Tracker
 
 ```text
