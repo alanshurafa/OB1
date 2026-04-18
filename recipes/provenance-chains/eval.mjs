@@ -209,21 +209,66 @@ async function fetchCandidates(args) {
   // eval_graded_at is only used to skip already-graded rows; all other eval
   // fields are written via the merge_thought_eval_metadata RPC.
   const select = "select=id,source_type:metadata->>source_type,type:metadata->>type,eval_graded_at:metadata->>eval_graded_at,content,derived_from,derivation_layer";
-  let query = `thoughts?${select}&order=created_at.desc`;
+
+  // --ids mode: single fetch, no pagination. Caller supplied an explicit
+  // id list, so there is no "scan the table for eligible rows" problem.
   if (args.ids) {
     // PostgREST in.(…) with UUIDs needs no quoting per element.
-    query += `&id=in.(${args.ids.join(",")})`;
-  } else {
-    query += `&derivation_layer=eq.derived&limit=${args.limit * 3}`;
+    const query = `thoughts?${select}&order=created_at.desc&id=in.(${args.ids.join(",")})`;
+    const rows = await sbGet(query);
+    const candidates = rows.filter((r) => {
+      if (r.derivation_layer !== "derived") return false;
+      if (!Array.isArray(r.derived_from) || r.derived_from.length === 0) return false;
+      if (!args.force && r.eval_graded_at) return false;
+      return true;
+    });
+    return candidates.slice(0, args.limit);
   }
-  const rows = await sbGet(query);
-  const candidates = rows.filter((r) => {
-    if (r.derivation_layer !== "derived") return false;
-    if (!Array.isArray(r.derived_from) || r.derived_from.length === 0) return false;
-    if (!args.force && r.eval_graded_at) return false;
-    return true;
-  });
-  return candidates.slice(0, args.limit);
+
+  // --limit mode: paginate newest-first until we collect `args.limit`
+  // eligible rows OR exhaust the table OR hit the safety cap. The old
+  // "fetch limit*3 once and hope" heuristic silently underfilled once a
+  // backlog of already-graded or empty-derived_from rows accumulated
+  // ahead of older eligible rows — see REVIEW-CODEX-9 P2 #2. PostgREST
+  // can't cleanly filter on `metadata->>eval_graded_at IS NULL` so we
+  // page server-side with `limit`+`offset` and filter client-side.
+  const PAGE_SIZE = 100;
+  const MAX_PAGES = 10; // safety cap: 1000 rows scanned before bailing out
+  const collected = [];
+  let page = 0;
+  let exhausted = false;
+  while (collected.length < args.limit && page < MAX_PAGES) {
+    const offset = page * PAGE_SIZE;
+    const query =
+      `thoughts?${select}&order=created_at.desc&derivation_layer=eq.derived` +
+      `&limit=${PAGE_SIZE}&offset=${offset}`;
+    const rows = await sbGet(query);
+    if (!Array.isArray(rows) || rows.length === 0) {
+      exhausted = true;
+      break;
+    }
+    for (const r of rows) {
+      if (r.derivation_layer !== "derived") continue;
+      if (!Array.isArray(r.derived_from) || r.derived_from.length === 0) continue;
+      if (!args.force && r.eval_graded_at) continue;
+      collected.push(r);
+      if (collected.length >= args.limit) break;
+    }
+    // If the page came back short, no further pages exist.
+    if (rows.length < PAGE_SIZE) {
+      exhausted = true;
+      break;
+    }
+    page += 1;
+  }
+  if (!exhausted && collected.length < args.limit && page >= MAX_PAGES) {
+    console.warn(
+      `[eval] fetchCandidates: scanned ${MAX_PAGES * PAGE_SIZE} rows and ` +
+      `only found ${collected.length}/${args.limit} eligible candidates — ` +
+      `backlog too large. Run backfill first or raise MAX_PAGES.`,
+    );
+  }
+  return collected.slice(0, args.limit);
 }
 
 async function fetchParents(parentIds) {
