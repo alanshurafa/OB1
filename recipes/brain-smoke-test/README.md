@@ -116,6 +116,19 @@ node smoke-all.mjs --help
 
 The seven category names are `MCP Server`, `REST API`, `DB Schema`, `Auth`, `Core Features`, `Access Key Enforcement`, and `Row-Level Security`.
 
+## Security Note -- `?key=` Access-Key Logging
+
+One Auth category check (`MCP accepts correct access key (?key=)`) verifies the URL-query-string auth path that OB1 supports for clients that cannot send custom headers (documented in [docs/01-getting-started.md](../../docs/01-getting-started.md) Step 5). **This check puts `MCP_ACCESS_KEY` into the URL**, which means the key ends up in:
+
+- Supabase's function-invocation logs (visible in the Studio UI to anyone with dashboard access)
+- any corporate HTTPS-inspection proxy that logs URLs (common on enterprise networks)
+- shell history if you pipe the output through `tee` or redirect stderr to a file
+- CI run logs if a future Node or `fetch` implementation verbose-logs request URLs
+
+The header-based auth check (`x-brain-key`) does **not** have this problem and is always preferred.
+
+If you run this harness from a network with HTTPS proxying, or ship the output anywhere public, **rotate `MCP_ACCESS_KEY`** afterward (Step 5 of the getting-started guide). To skip the `?key=` check entirely on sensitive networks, run `node smoke-all.mjs --category=MCP\ Server` and the other categories except `Auth` -- you lose a small amount of coverage but the key never touches a URL.
+
 ## Example Output
 
 The harness prints one row per check, grouped by category, then a summary line. Row glyphs:
