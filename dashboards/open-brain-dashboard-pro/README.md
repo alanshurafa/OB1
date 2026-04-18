@@ -36,7 +36,7 @@ All configuration is through environment variables. **The app refuses to start i
 |----------|----------|-------------|
 | `NEXT_PUBLIC_API_URL` | Yes | Base URL of your Open Brain REST API, typically `https://YOUR-PROJECT-REF.supabase.co/functions/v1/open-brain-rest`. |
 | `SESSION_SECRET` | Yes | 32+ character secret used by `iron-session` to encrypt the session cookie. Generate with `openssl rand -hex 32`. |
-| `RESTRICTED_PASSPHRASE_HASH` | No | SHA-256 hash of a passphrase that unlocks restricted/sensitive content. Only meaningful if you've applied the [sensitivity-tiers primitive](../../primitives/sensitivity-tiers/). Leave unset to hide the toggle. Generate with `echo -n "your-passphrase" \| shasum -a 256`. |
+| `RESTRICTED_PASSPHRASE_HASH` | No | SHA-256 hash of a passphrase that unlocks restricted/sensitive content. Only meaningful if your brain has a `sensitivity_tier` column on `public.thoughts`. There is no official sensitivity-tiers primitive upstream yet — either add your own migration (see PR #192 for pattern) or wait for the primitive to land. On stock OB1, this dashboard's restricted-content toggle is hidden at startup. Generate with `echo -n "your-passphrase" \| shasum -a 256`. |
 
 Copy `.env.example` to `.env.local` (gitignored) and fill it in.
 
