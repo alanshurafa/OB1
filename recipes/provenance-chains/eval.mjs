@@ -151,14 +151,32 @@ async function sbPatch(queryPath, body) {
   if (!res.ok) throw new Error(`PATCH ${queryPath}: ${res.status} ${await res.text()}`);
 }
 
+// POST to a PostgREST RPC endpoint. The server-side function is expected to
+// RETURNS VOID, so we ask PostgREST not to send a body back (`return=minimal`)
+// and we do not try to parse one here. Matches the RPC helper in backfill.mjs.
+async function sbRpc(fnName, body) {
+  const res = await fetch(`${REST}/rpc/${fnName}`, {
+    method: "POST",
+    headers: { ...HEADERS, Prefer: "return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`RPC ${fnName}: ${res.status} ${text.slice(0, 300)}`);
+  }
+}
+
 // ── Candidate + parent fetchers ────────────────────────────────────────────
 
 async function fetchCandidates(args) {
-  // Canonical public.thoughts stores source_type and type inside metadata, not
-  // as top-level columns. Alias them back via PostgREST's "alias:path" select
-  // so downstream code can keep using child.source_type / child.type without
-  // reaching into metadata at every callsite.
-  const select = "select=id,source_type:metadata->>source_type,type:metadata->>type,content,metadata,derived_from,derivation_layer";
+  // Canonical public.thoughts stores source_type, type, and eval_graded_at
+  // inside metadata. We alias just the specific keys we read via PostgREST's
+  // "alias:path" select rather than snapshotting the whole metadata blob —
+  // any later write-back from a stale snapshot would race with backfill's
+  // merge_thought_provenance_metadata and silently erase metadata.provenance.
+  // eval_graded_at is only used to skip already-graded rows; all other eval
+  // fields are written via the merge_thought_eval_metadata RPC.
+  const select = "select=id,source_type:metadata->>source_type,type:metadata->>type,eval_graded_at:metadata->>eval_graded_at,content,derived_from,derivation_layer";
   let query = `thoughts?${select}&order=created_at.desc`;
   if (args.ids) {
     // PostgREST in.(…) with UUIDs needs no quoting per element.
@@ -170,7 +188,7 @@ async function fetchCandidates(args) {
   const candidates = rows.filter((r) => {
     if (r.derivation_layer !== "derived") return false;
     if (!Array.isArray(r.derived_from) || r.derived_from.length === 0) return false;
-    if (!args.force && r.metadata?.eval_graded_at) return false;
+    if (!args.force && r.eval_graded_at) return false;
     return true;
   });
   return candidates.slice(0, args.limit);
@@ -314,12 +332,16 @@ async function processInChunks(items, fn, concurrency) {
 
 // ── Score persistence ──────────────────────────────────────────────────────
 
-async function writeScore(thoughtId, score, grader, existingMetadata) {
+async function writeScore(thoughtId, score, grader) {
   const avg = Math.round(
     ((score.existence + score.relevance + score.sufficiency) / 3) * 100,
   ) / 100;
-  const merged = {
-    ...(existingMetadata ?? {}),
+  // Flat top-level eval keys. merge_thought_eval_metadata performs
+  // `metadata = metadata || p_eval` server-side, so these five keys replace
+  // their own values while every other key (including metadata.provenance
+  // written by backfill) is preserved. No GET+mutate+PATCH round trip here,
+  // so there is no stale-snapshot race against the backfill RPC.
+  const patch = {
     eval_score: avg,
     eval_dimensions: {
       existence: score.existence,
@@ -330,7 +352,10 @@ async function writeScore(thoughtId, score, grader, existingMetadata) {
     eval_graded_at: new Date().toISOString(),
     eval_grader: grader,
   };
-  await sbPatch(`thoughts?id=eq.${thoughtId}`, { metadata: merged });
+  await sbRpc("merge_thought_eval_metadata", {
+    p_thought_id: thoughtId,
+    p_eval: patch,
+  });
 }
 
 // ── Queue mode helpers ─────────────────────────────────────────────────────
@@ -374,12 +399,12 @@ async function applyScoresFromFile(file, dryRun) {
     const avg = (score.existence + score.relevance + score.sufficiency) / 3;
     results.push({ id: obj.thought_id, score, avg, sourceType: obj.source_type ?? "?", parentCount: obj.parent_count ?? 0 });
     if (!dryRun) {
-      const rows = await sbGet(`thoughts?select=metadata&id=eq.${obj.thought_id}`);
-      if (rows.length === 0) {
-        console.error(`[eval] thought ${obj.thought_id} not found, skipping`);
-        continue;
-      }
-      await writeScore(obj.thought_id, score, obj.grader ?? "queue", rows[0].metadata ?? {});
+      // No GET-before-write: merge_thought_eval_metadata performs a
+      // server-side `metadata = metadata || p_eval` on the current row, so
+      // there is no stale JS snapshot that could clobber a concurrent
+      // backfill RPC. If the thought has been deleted, the UPDATE simply
+      // affects zero rows — there is nothing to mirror back.
+      await writeScore(obj.thought_id, score, obj.grader ?? "queue");
     }
   }
   return results;
@@ -495,7 +520,7 @@ async function main() {
         return { id: child.id, sourceType: child.source_type, parentCount: parents.length, error: "grader returned no valid score" };
       }
       const avg = (score.existence + score.relevance + score.sufficiency) / 3;
-      if (!args.dryRun) await writeScore(child.id, score, args.grader, child.metadata ?? {});
+      if (!args.dryRun) await writeScore(child.id, score, args.grader);
       console.log(`  ${child.id} -> ${avg.toFixed(2)}/5 (${score.existence}/${score.relevance}/${score.sufficiency})`);
       return { id: child.id, sourceType: child.source_type, parentCount: parents.length, score, avg };
     } catch (err) {
