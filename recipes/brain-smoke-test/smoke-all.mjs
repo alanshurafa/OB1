@@ -564,6 +564,12 @@ let cleanupRan = false;
 let cleanupFailed = false;
 let cleanupInFlight = null; // Promise if a DELETE is currently pending.
 
+// Hard cap on how long ANY single cleanup DELETE is allowed to run. Used
+// both by deleteSmokeRows (normal + retry path) and by the signal handler.
+// If the request takes longer than this, we abort and surface a clear
+// stderr warning rather than hanging the process forever.
+const CLEANUP_TIMEOUT_MS = 5_000;
+
 async function deleteSmokeRows(reason = "cleanup") {
   if (cleanupRan) return { ok: true, reason: "already-clean" };
   // Dedupe concurrent callers (signal handler + finally fired together).
@@ -572,10 +578,17 @@ async function deleteSmokeRows(reason = "cleanup") {
   if (cleanupInFlight) return cleanupInFlight;
 
   cleanupInFlight = (async () => {
+    // Every DELETE gets its own AbortController with a hard timeout so a
+    // stalled Supabase (DNS hang, TCP SYN-SENT, mid-migration) can't keep
+    // the event loop alive indefinitely. Critical for the SIGINT handler
+    // path: without this, Ctrl-C on a stalled network forces the user to
+    // SIGKILL, which skips cleanup entirely and guarantees residue.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), CLEANUP_TIMEOUT_MS);
     try {
       const res = await fetch(
         `${REST_BASE}/thoughts?metadata->>tag=eq.${encodeURIComponent(SMOKE_TAG)}`,
-        { method: "DELETE", headers: SVC_HEADERS },
+        { method: "DELETE", headers: SVC_HEADERS, signal: ctrl.signal },
       );
       if (!res.ok) {
         cleanupFailed = true;
@@ -592,12 +605,17 @@ async function deleteSmokeRows(reason = "cleanup") {
       return { ok: true, status: res.status, reason };
     } catch (err) {
       cleanupFailed = true;
+      const aborted = err?.name === "AbortError";
+      const detail = aborted
+        ? `aborted after ${CLEANUP_TIMEOUT_MS}ms (network stalled or Supabase unreachable)`
+        : String(err.message || err);
       process.stderr.write(
-        `WARN: ${reason} threw while deleting smoke rows: ${String(err.message || err)}. ` +
+        `WARN: ${reason} threw while deleting smoke rows: ${detail}. ` +
         `Tag: ${SMOKE_TAG}\n`,
       );
-      return { ok: false, error: err, reason };
+      return { ok: false, error: err, aborted, reason };
     } finally {
+      clearTimeout(timer);
       cleanupInFlight = null;
     }
   })();
@@ -609,9 +627,23 @@ function installDestructiveCleanupHooks() {
   if (cleanupInstalled) return;
   cleanupInstalled = true;
   const handler = (sig) => {
-    // Fire cleanup, then exit. Don't await -- we're in a signal handler and
-    // Node will keep the event loop alive while the fetch is pending.
-    deleteSmokeRows(`${sig} handler`).finally(() => process.exit(130));
+    // Guard against a hung event loop. deleteSmokeRows has its own 5s
+    // AbortController timeout, but belt-and-braces: if the promise still
+    // hasn't settled CLEANUP_TIMEOUT_MS + 1s later (e.g., the fetch layer
+    // itself misbehaves), force-exit with an explicit residue warning so
+    // the user is not left wondering whether rows were deleted.
+    const hardTimer = setTimeout(() => {
+      process.stderr.write(
+        `ERROR: ${sig} cleanup timed out -- smoke rows may remain. ` +
+        `Manual delete: metadata->>tag = '${SMOKE_TAG}'\n`,
+      );
+      process.exit(130);
+    }, CLEANUP_TIMEOUT_MS + 1_000);
+    hardTimer.unref?.();
+    deleteSmokeRows(`${sig} handler`).finally(() => {
+      clearTimeout(hardTimer);
+      process.exit(130);
+    });
   };
   process.once("SIGINT", () => handler("SIGINT"));
   process.once("SIGTERM", () => handler("SIGTERM"));
@@ -903,9 +935,15 @@ async function main() {
           process.stderr.write(
             `WARN: previous cleanup attempt failed; retrying once. Tag: ${SMOKE_TAG}\n`,
           );
-          // Reset the failed flag so deleteSmokeRows runs again rather than
-          // short-circuiting on the in-flight/failed state.
-          cleanupFailed = false;
+          // Do NOT pre-emptively reset cleanupFailed before the retry fires.
+          // deleteSmokeRows() gates only on cleanupRan/cleanupInFlight, not
+          // on cleanupFailed, so the retry will run regardless. Keeping the
+          // flag set until the retry actually succeeds closes a narrow race:
+          // if SIGINT lands between the reset and the retry, the signal
+          // handler would previously see cleanupFailed=false and main's
+          // exit-code logic (which checks cleanupFailed) could false-green
+          // while rows still exist. deleteSmokeRows flips cleanupFailed back
+          // to false itself on a 2xx retry.
           const retryT0 = Date.now();
           cleanupAttempts = 2;
           const retry = await deleteSmokeRows("finally retry");
