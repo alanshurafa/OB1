@@ -570,6 +570,15 @@ async function handleStats(url: URL): Promise<Response> {
 
 // ── Browse Thoughts ─────────────────────────────────────────────────────────
 
+/** Columns that are safe to expose as sort keys on /thoughts. */
+const ALLOWED_BROWSE_SORT = new Set([
+  "id",
+  "created_at",
+  "updated_at",
+  "importance",
+  "quality_score",
+]);
+
 async function handleBrowseThoughts(url: URL): Promise<Response> {
   const page = Math.max(Number(url.searchParams.get("page")) || 1, 1);
   const perPage = Math.min(Math.max(Number(url.searchParams.get("per_page") || url.searchParams.get("limit")) || 20, 1), 100);
@@ -578,7 +587,14 @@ async function handleBrowseThoughts(url: URL): Promise<Response> {
   const importanceMin = url.searchParams.get("importance_min") ? Number(url.searchParams.get("importance_min")) : null;
   const startDate = url.searchParams.get("start_date")?.trim() || null;
   const endDate = url.searchParams.get("end_date")?.trim() || null;
-  const sort = url.searchParams.get("sort") || "created_at";
+  const rawSort = url.searchParams.get("sort");
+  if (rawSort && !ALLOWED_BROWSE_SORT.has(rawSort)) {
+    return json({
+      error: "invalid_sort",
+      message: `sort must be one of: ${[...ALLOWED_BROWSE_SORT].join(", ")}`,
+    }, 400);
+  }
+  const sort = rawSort ?? "created_at";
   const order = url.searchParams.get("order") === "asc";
   const excludeRestricted = url.searchParams.get("exclude_restricted") !== "false";
   const offset = (page - 1) * perPage;
