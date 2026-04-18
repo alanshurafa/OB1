@@ -175,6 +175,11 @@ because both writes are idempotent: the column PATCH writes the same values
 it wrote last time, and the RPC merge is a `COALESCE || ` server-side
 concat so running it twice produces the same blob.
 
+The script exits non-zero when any row is left half-migrated so CI/cron can
+detect the condition: `exit 2` for hard errors and `exit 1` for
+half-migrated rows only. Re-run with `--force` to repair; exit `0` means
+every candidate finished cleanly.
+
 ## Troubleshooting
 
 **Issue: `[backfill] GET thoughts: 400 "column \"derivation_layer\" does not exist"`**

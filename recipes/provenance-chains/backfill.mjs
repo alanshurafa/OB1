@@ -333,7 +333,20 @@ async function main() {
   }
 
   console.log("\n[backfill] summary:", summary);
+
+  // Half-migrated rows (column PATCH succeeded, metadata merge RPC failed)
+  // used to leave the process with exit code 0, so unattended automation
+  // had no way to detect them. Treat them as a failure condition alongside
+  // hard errors; re-run with --force to repair.
+  if (summary.halfMigrated > 0) {
+    console.error(
+      `[backfill] WARN — ${summary.halfMigrated} row(s) half-migrated ` +
+      `(column PATCH applied, metadata.provenance missing). ` +
+      `Re-run with --force to repair; both writes are idempotent.`,
+    );
+  }
   if (summary.errors > 0) process.exit(2);
+  if (summary.halfMigrated > 0) process.exit(1);
 }
 
 main().catch((err) => {
