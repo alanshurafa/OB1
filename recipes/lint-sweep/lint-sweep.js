@@ -226,6 +226,11 @@ function makeRestClient(baseUrl, serviceKey) {
     const cr = res.headers.get("content-range") || "";
     const m = cr.match(/\/(\d+|\*)/);
     if (m && m[1] !== "*") return Number(m[1]);
+    // TODO(IN-03): If Content-Range is missing entirely (some proxies strip
+    // it on otherwise-OK responses) we fall through to reading the body here,
+    // which may already have been consumed above on the error path. On a
+    // successful response this silently returns 0. Low-risk cosmetic; kept
+    // as-is for now because PostgREST proper always sets the header.
     const arr = await res.json().catch(() => []);
     return Array.isArray(arr) ? arr.length : 0;
   }
@@ -567,6 +572,14 @@ async function tier3LlmLint(db, args) {
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
+      // TODO(WR-04): Currently any single unparseable LLM response aborts the
+      // whole run and no partial report is written (writeFileSync happens
+      // after every tier completes). This is documented fail-loud behavior
+      // (README "Safety" section). Future options if this becomes painful:
+      //   1) retry once with a stricter system prompt,
+      //   2) write a partial report before re-raising,
+      //   3) skip the failing batch and continue.
+      // Left as documented trade-off for now.
       throw new Error(`Failed to parse Tier 3 JSON (call ${out.llmCalls}): ${e.message}\nRaw: ${raw.slice(0, 300)}`);
     }
 
