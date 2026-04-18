@@ -12,11 +12,23 @@
     result.className = `result ${kind || ''}`.trim();
   }
 
+  // Transport-security policy: we require HTTPS for any non-loopback origin.
+  // Plaintext HTTP is only accepted for http://localhost and http://127.0.0.1
+  // (with optional port) — the common self-hosted dev pattern. See
+  // REVIEW-CODEX P1 #2: accepting arbitrary http:// would let the extension
+  // send the user's x-brain-key and captured chat content in plaintext.
+  const ENDPOINT_POLICY_RE =
+    /^(https:\/\/|http:\/\/localhost(:\d+)?\/|http:\/\/127\.0\.0\.1(:\d+)?\/)/i;
+
   function normalizeEndpoint(value) {
     const trimmed = String(value || '').trim().replace(/\/+$/, '');
     if (!trimmed) return '';
-    if (!/^https?:\/\//i.test(trimmed)) {
-      throw new Error('API URL must start with http:// or https://');
+    // Append a trailing slash for the policy regex so "http://localhost"
+    // (no path yet) still matches the "http://localhost/" pattern.
+    if (!ENDPOINT_POLICY_RE.test(`${trimmed}/`)) {
+      throw new Error(
+        'API URL must be https:// (or http://localhost / http://127.0.0.1 for local dev).'
+      );
     }
     return trimmed;
   }

@@ -12,7 +12,8 @@
   ],
   "optional_host_permissions": [
     "https://*/*",
-    "http://*/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
