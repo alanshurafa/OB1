@@ -11,10 +11,10 @@ Open Brain captures atomic thoughts, but as soon as you start synthesizing — w
 - `derivation_layer` (TEXT): `'primary'` (atomic capture) or `'derived'` (regenerable artifact). Defaults to `'primary'` so all existing rows keep working.
 - `supersedes` (UUID): optional pointer to a prior thought this one replaces — e.g., a regenerated digest replacing yesterday's.
 
-It also installs two helper functions:
+It also installs two helper functions (both `SECURITY DEFINER`, both **granted to `service_role` only** — call them from your edge function, not from client code):
 
 - `trace_provenance(thought_id UUID, max_depth INT, node_cap INT)` — walks `derived_from` upward and returns a flat ancestor rowset with depth, cycle detection, and restricted-tier redaction.
-- `find_derivatives(thought_id UUID, limit INT, exclude_restricted BOOLEAN)` — reverse lookup via the GIN index; "what derived artifacts cite this atomic thought?"
+- `find_derivatives(thought_id UUID, limit INT)` — reverse lookup via the GIN index; "what derived artifacts cite this atomic thought?" Restricted rows are always filtered out; there is no client-visible override.
 
 The two functions power the **Provenance Chains Pipeline** recipe (backfill, eval, and MCP tool handlers).
 
@@ -81,10 +81,13 @@ SELECT * FROM public.trace_provenance(
 );
 
 -- Should return 0 rows on a fresh install (nothing has been marked derived yet).
+-- Note: both helpers are service_role-only, so run these in the Supabase SQL
+-- Editor (which uses the service role) or via an edge function. PostgREST
+-- calls as `authenticated` will return 42501 permission denied, which is the
+-- intended behaviour.
 SELECT * FROM public.find_derivatives(
   (SELECT id FROM public.thoughts LIMIT 1),
-  50,
-  true
+  50
 );
 ```
 
@@ -94,7 +97,7 @@ After running the migration:
 
 - `public.thoughts` has four new columns: `derived_from JSONB`, `derivation_method TEXT`, `derivation_layer TEXT NOT NULL DEFAULT 'primary'`, `supersedes UUID`.
 - Every existing row has `derivation_layer = 'primary'` and the three other columns NULL — no data loss, no behavior change for existing MCP tools.
-- Two helper SQL functions exist: `trace_provenance` and `find_derivatives`. Both are `SECURITY DEFINER`, `STABLE`, and redact restricted thoughts.
+- Two helper SQL functions exist: `trace_provenance` and `find_derivatives`. Both are `SECURITY DEFINER`, `STABLE`, **granted to `service_role` only** (clients must reach them via the open-brain edge function, not PostgREST as `authenticated`), and redact restricted thoughts.
 - Three indexes exist: `idx_thoughts_derived_from` (GIN), `idx_thoughts_derivation_layer` (btree), and `idx_thoughts_supersedes` (partial btree).
 - PostgREST schema cache has been reloaded (`NOTIFY pgrst, 'reload schema'`).
 
@@ -114,7 +117,9 @@ This migration assumes `public.thoughts.id` is a `UUID` — the canonical Open B
 If you need to remove everything this migration added, run the block below. The rollback is lossy — any recorded provenance will be permanently dropped.
 
 ```sql
--- Drop helper functions
+-- Drop helper functions (both the current 2-arg signature and any legacy
+-- 3-arg find_derivatives from an earlier install)
+DROP FUNCTION IF EXISTS public.find_derivatives(UUID, INT);
 DROP FUNCTION IF EXISTS public.find_derivatives(UUID, INT, BOOLEAN);
 DROP FUNCTION IF EXISTS public.trace_provenance(UUID, INT, INT);
 

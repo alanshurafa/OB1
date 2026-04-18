@@ -201,19 +201,39 @@ BEGIN
 END;
 $$;
 
+-- Service-role-only. The canonical OB1 access pattern is: clients call the
+-- edge function, which authenticates via its access key and uses the
+-- service_role to reach PostgREST. Granting EXECUTE to `authenticated` here
+-- would let any signed-in Supabase user invoke this RPC directly via
+-- PostgREST and bypass the edge-function access key entirely. Keep it
+-- service_role only so the edge function is the sole caller.
+REVOKE EXECUTE ON FUNCTION public.trace_provenance(UUID, INT, INT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.trace_provenance(UUID, INT, INT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.trace_provenance(UUID, INT, INT)
-  TO authenticated, service_role;
+  TO service_role;
 
 -- ============================================================
 -- 6. HELPER: find_derivatives
 --    Single-level reverse lookup — "what thoughts were derived from this one?"
 --    Uses the GIN index on derived_from via the @> containment operator.
+--
+--    Restricted rows are ALWAYS hidden from this RPC. The prior signature
+--    accepted a client-supplied `exclude_restricted` flag; that was unsafe
+--    because a caller could pass false and unmask restricted rows. Restricted
+--    filtering is now hardcoded inside the function. A separate admin-only
+--    path is out of scope for this schema — add it in a companion recipe
+--    gated on service_role if you need to include restricted rows.
 -- ============================================================
+
+-- Drop any prior 3-arg signature (p_exclude_restricted) before (re)creating
+-- the current 2-arg version. CREATE OR REPLACE FUNCTION cannot change a
+-- parameter list in-place, so the old signature must be removed first for
+-- this migration to be re-runnable.
+DROP FUNCTION IF EXISTS public.find_derivatives(UUID, INT, BOOLEAN);
 
 CREATE OR REPLACE FUNCTION public.find_derivatives(
   p_thought_id UUID,
-  p_limit INT DEFAULT 100,
-  p_exclude_restricted BOOLEAN DEFAULT true
+  p_limit INT DEFAULT 100
 )
 RETURNS TABLE (
   id UUID,
@@ -254,14 +274,17 @@ BEGIN
     t.created_at
   FROM public.thoughts t
   WHERE t.derived_from @> v_needle
-    AND (NOT p_exclude_restricted OR t.sensitivity_tier IS DISTINCT FROM 'restricted')
+    AND t.sensitivity_tier IS DISTINCT FROM 'restricted'
   ORDER BY t.created_at DESC
   LIMIT v_limit;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.find_derivatives(UUID, INT, BOOLEAN)
-  TO authenticated, service_role;
+-- Service-role-only (same reasoning as trace_provenance above).
+REVOKE EXECUTE ON FUNCTION public.find_derivatives(UUID, INT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.find_derivatives(UUID, INT) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.find_derivatives(UUID, INT)
+  TO service_role;
 
 -- ============================================================
 -- 7. RELOAD PostgREST SCHEMA CACHE
