@@ -548,14 +548,40 @@ async function fetchUnenriched(config, cursor, limit) {
 
 async function fetchByIds(config, ids) {
   if (ids.length === 0) return [];
-  const idList = ids.join(",");
-  const url = `${config.supabaseUrl}/rest/v1/thoughts?select=id,content,source_type,metadata&id=in.(${idList})`;
-  const res = await fetchWithTimeout(url, { headers: supabaseHeaders(config) }, SUPABASE_TIMEOUT_MS);
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Fetch by IDs failed (${res.status}): ${body.substring(0, 300)}`);
+  // Chunk by count AND by URL length. PostgREST defaults to 8KB URL
+  // limits and proxies in front of it often cap lower. 50 IDs per
+  // request is the hard ceiling; we also bound by ~6000 chars of
+  // comma-joined IDs to stay safe with very large numeric IDs.
+  const MAX_IDS_PER_REQUEST = 50;
+  const MAX_URL_ID_CHARS = 6000;
+  const chunks = [];
+  let current = [];
+  let currentLen = 0;
+  for (const id of ids) {
+    const tokenLen = String(id).length + 1; // +1 for comma
+    if (current.length >= MAX_IDS_PER_REQUEST || currentLen + tokenLen > MAX_URL_ID_CHARS) {
+      if (current.length > 0) chunks.push(current);
+      current = [];
+      currentLen = 0;
+    }
+    current.push(id);
+    currentLen += tokenLen;
   }
-  return res.json();
+  if (current.length > 0) chunks.push(current);
+
+  const all = [];
+  for (const chunk of chunks) {
+    const idList = chunk.join(",");
+    const url = `${config.supabaseUrl}/rest/v1/thoughts?select=id,content,source_type,metadata&id=in.(${idList})`;
+    const res = await fetchWithTimeout(url, { headers: supabaseHeaders(config) }, SUPABASE_TIMEOUT_MS);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Fetch by IDs failed (${res.status}): ${body.substring(0, 300)}`);
+    }
+    const rows = await res.json();
+    if (Array.isArray(rows)) all.push(...rows);
+  }
+  return all;
 }
 
 async function patchThought(id, patch, config, retries = 4) {
@@ -694,8 +720,22 @@ function checkpointState(state) {
   saveState(state);
 }
 
+// Cap the failed-IDs list so a catastrophic run against a flaky
+// provider cannot grow state.failedIds without bound. At 1000 entries
+// we evict the oldest IDs FIFO-style so newer failures replace stale
+// ones. Warn exactly once per run when the cap is first reached.
+const MAX_FAILED_IDS = 1000;
 function addFailedId(state, id) {
-  if (!state.failedIds.includes(id)) state.failedIds.push(id);
+  if (state.failedIds.includes(id)) return;
+  if (state.failedIds.length >= MAX_FAILED_IDS) {
+    if (!state._failedCapWarned) {
+      console.warn(`  (state.failedIds hit cap of ${MAX_FAILED_IDS}; oldest IDs will be evicted)`);
+      state._failedCapWarned = true;
+    }
+    // Drop the oldest entry to make room.
+    state.failedIds.shift();
+  }
+  state.failedIds.push(id);
 }
 
 function removeFailedId(state, id) {
