@@ -1,0 +1,203 @@
+# Brain Smoke Test
+
+> One-shot harness that probes every live surface of an Open Brain install and reports which ones are healthy, skipped (optional feature not installed), or broken.
+
+## What It Does
+
+Runs ~30 independent checks across six categories against your deployed Open Brain and prints a pass/skip/fail dashboard. Optional features (REST API, ob-graph, enhanced-thoughts, smart-ingest) are detected automatically and skipped with a clear reason rather than failing the run, so the same script works on stock core installs and fully-loaded instances.
+
+## Why Use This
+
+Open Brain is a lot of moving parts -- a database, an Edge Function, a secret access key, RLS policies, and optionally more tables and endpoints from recipes and integrations. When something is wrong it is usually one specific thing: a missing `GRANT`, a mismatched access key, a forgotten column, a function that failed to deploy. This harness catches those misconfigurations before you waste an hour wondering why Claude Desktop sees no tools or why semantic search returns nothing.
+
+Run it:
+
+- After initial setup to confirm every surface is wired correctly
+- After adding an extension or recipe that touches the schema
+- Before reporting a bug -- the output tells a maintainer exactly which surface is broken
+- In CI to guard a shared instance from regressing
+
+## Categories Checked
+
+1. **MCP Server** -- The `open-brain-mcp` Edge Function responds, exposes the four canonical tools (`search_thoughts`, `list_thoughts`, `thought_stats`, `capture_thought`), and completes a JSON-RPC `initialize` handshake.
+2. **REST API** -- If you have installed the optional `rest-api` integration or set `REST_API_BASE`, the gateway answers `/health`, `/recent`, `/search`, and `/stats`. Skipped otherwise.
+3. **DB Schema** -- The canonical `public.thoughts` table exists with `id, content, embedding, metadata, created_at, updated_at`, the dedup fingerprint column is present, and `match_thoughts` + `upsert_thought` RPCs are callable. Optional tables (`entities`, `edges`, `ingestion_jobs`) and the `search_thoughts_text` RPC are detected and skipped when absent.
+4. **Auth** -- `MCP_ACCESS_KEY` is enforced: requests with no key, with a wrong key, with the header (`x-brain-key`), and with the query string (`?key=`) all produce the expected outcome.
+5. **Core Features** -- End-to-end capture + search + cleanup. Inserts a uniquely-tagged row via REST, fetches it back, then calls MCP's `capture_thought` and `search_thoughts` tools and confirms the tag appears. Deletes both rows at the end.
+6. **Safety Rails** -- RLS rejects unauthenticated PostgREST calls, rejects an invalid `apikey`, and the service role can still read.
+
+## Prerequisites
+
+- Working Open Brain setup ([guide](../../docs/01-getting-started.md))
+- Node.js 18 or later (uses the built-in `fetch` and `AbortController`)
+- A local `.env.local` file (or exported environment variables) in this recipe directory
+
+## Credential Tracker
+
+Copy this block into a text editor and fill it in.
+
+```text
+BRAIN SMOKE TEST -- CREDENTIAL TRACKER
+--------------------------------------
+
+FROM YOUR OPEN BRAIN SETUP
+  Project URL:                ____________  (e.g. https://abcd1234.supabase.co)
+  Service role key:           ____________  (Supabase "Secret key")
+  MCP access key:             ____________  (from Step 5 of the getting-started guide)
+
+OPTIONAL (unlocks extra checks, safe to leave blank on stock installs)
+  REST API base URL:          ____________  (e.g. https://<ref>.supabase.co/functions/v1/open-brain-rest)
+  Dashboard API base URL:     ____________  (e.g. https://dashboard.example.com/api)
+
+--------------------------------------
+```
+
+## Installation
+
+No build step. Just drop the file in and run it.
+
+1. Copy `smoke-all.mjs` into a local folder on your machine (any folder is fine -- it does not need to live inside your Supabase project directory).
+
+2. Create `.env.local` next to it:
+
+   ```text
+   SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-secret-key
+   MCP_ACCESS_KEY=your-access-key-from-step-5
+
+   # Optional -- unlocks REST API checks. Leave unset on stock installs.
+   # REST_API_BASE=https://YOUR_PROJECT_REF.supabase.co/functions/v1/open-brain-rest
+   # NEXT_PUBLIC_API_URL=https://your-dashboard.example.com/api
+   ```
+
+3. Run it:
+
+   ```bash
+   node smoke-all.mjs
+   ```
+
+## Usage
+
+```bash
+# Pretty-printed dashboard (default)
+node smoke-all.mjs
+
+# Machine-readable JSON -- pipe into jq, a log aggregator, or CI assertions
+node smoke-all.mjs --json
+
+# Run only one category (names are case-insensitive)
+node smoke-all.mjs --category="DB Schema"
+node smoke-all.mjs --category=Auth
+node smoke-all.mjs --category="Core Features"
+
+# Show this usage
+node smoke-all.mjs --help
+```
+
+The six category names are `MCP Server`, `REST API`, `DB Schema`, `Auth`, `Core Features`, `Safety Rails`.
+
+## Example Output
+
+A healthy stock install where the REST API integration is not installed:
+
+```text
+Open Brain Smoke Test -- 30 checks across 6 categories
+Target: https://abcd1234.supabase.co
+
+MCP Server:
+  ✓ open-brain-mcp endpoint responds                         124ms -- HTTP 204
+  ✓ MCP tools/list returns core tools                        312ms -- tools=4 (search_thoughts, list_thoughts, thought_stats, capture_thought)
+  ✓ MCP initialize handshake                                 289ms -- server=open-brain
+
+REST API:
+  ⚠ GET /health                                               92ms -- REST API not installed
+  ⚠ GET /recent?limit=3                                       88ms -- REST API not installed
+  ⚠ POST /search (text)                                       91ms -- REST API not installed
+  ⚠ GET /stats                                                87ms -- REST API not installed
+  ⚠ Dashboard health (NEXT_PUBLIC_API_URL)                     1ms -- NEXT_PUBLIC_API_URL unset
+
+DB Schema:
+  ✓ thoughts table present                                   178ms -- rows=1247
+  ✓ thoughts has canonical columns                           142ms -- id, content, embedding, metadata, created_at, updated_at
+  ✓ content_fingerprint column (dedup)                       138ms -- present
+  ✓ match_thoughts RPC                                       301ms -- callable
+  ✓ upsert_thought RPC                                       198ms -- callable
+  ✓ thoughts recently written (last 7d)                      165ms -- rows_7d=84
+  ⚠ entities table (optional recipe: ob-graph)               142ms -- entities table not installed
+  ⚠ edges table (optional recipe: ob-graph)                  141ms -- edges table not installed
+  ⚠ ingestion_jobs table (optional integration: smart-ingest) 139ms -- ingestion_jobs table not installed
+  ⚠ search_thoughts_text RPC (optional schema: enhanced-thoughts) 138ms -- enhanced-thoughts not installed
+
+Auth:
+  ✓ MCP rejects missing access key                            96ms -- HTTP 401 (rejected)
+  ✓ MCP rejects wrong access key                              98ms -- HTTP 401 (rejected)
+  ✓ MCP accepts correct access key (header)                  197ms -- HTTP 200
+  ✓ MCP accepts correct access key (?key=)                   201ms -- HTTP 200
+
+Core Features:
+  ✓ Insert test thought via direct REST                      188ms -- id=a1b2c3d4...
+  ✓ Retrieve test thought by id                              142ms -- content matches
+  ✓ MCP capture_thought tool call                           2431ms -- captured
+  ✓ MCP search_thoughts finds test row                      2612ms -- found on attempt 1
+  ✓ Cleanup: delete test rows                                189ms -- deleted
+
+Safety Rails:
+  ✓ RLS enabled on thoughts                                   98ms -- HTTP 401 (unauthenticated access rejected)
+  ✓ Anon/publishable key cannot read thoughts                102ms -- HTTP 401 (rejected)
+  ✓ Service role can read thoughts                           154ms -- rows=1247
+
+Summary: 21 pass, 9 skip, 0 fail (30 total)
+Result: OK
+```
+
+Legend: `✓` pass, `⚠` skipped (optional feature not installed), `✗` failed.
+
+## Exit Codes
+
+- `0` -- all checks passed, or passed-or-skipped
+- `1` -- at least one check failed
+- `2` -- setup error (missing required env var, unknown `--category`)
+
+Skipped checks never fail the run, so you can wire this into CI without it going red every time an optional recipe is absent.
+
+## Extending
+
+Each category is a plain array of `{ name, fn }` entries. To add a check:
+
+1. Pick the category array (`mcpChecks`, `restChecks`, `dbChecks`, `authChecks`, `coreChecks`, or `safetyChecks`) inside `smoke-all.mjs`.
+2. Append an entry:
+
+   ```js
+   {
+     name: "My new check",
+     fn: async (signal) => {
+       const res = await fetch(`${REST_BASE}/my_table?select=id&limit=1`, {
+         headers: SVC_HEADERS, signal,
+       });
+       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+       return "ok";
+     },
+   },
+   ```
+
+3. For optional features, throw `SkipError` when the dependency is absent rather than letting the check fail:
+
+   ```js
+   if (res.status === 404) throw new SkipError("my-feature not installed");
+   ```
+
+Each `fn` gets an `AbortSignal` that fires at 10 seconds by default. Return a short string to show in the dashboard, or throw any other error to fail the check.
+
+## Troubleshooting
+
+**Issue: `ERROR: missing required env var(s): SUPABASE_URL, ...`**
+Solution: Create `.env.local` in the current directory with `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `MCP_ACCESS_KEY`, or export them into your shell. The script refuses to start without all three.
+
+**Issue: `Auth: ✗ MCP accepts correct access key` fails with HTTP 401**
+Solution: The `MCP_ACCESS_KEY` in `.env.local` does not match what Supabase has stored. Re-run `supabase secrets set MCP_ACCESS_KEY=<your-key>` and confirm the key in your credential tracker is identical.
+
+**Issue: `DB Schema: ✗ thoughts has canonical columns` fails with HTTP 400**
+Solution: Your `public.thoughts` table is missing one of the canonical columns (most commonly `embedding`). Re-run the SQL in [Step 2.2 of the getting-started guide](../../docs/01-getting-started.md). Additive migrations are safe -- the script only reads, it does not drop anything.
+
+**Issue: `MCP search_thoughts finds test row` fails even though capture succeeded**
+Solution: Embedding generation is asynchronous in some setups and may not land before search runs. The check already retries once with a 1.5 s delay; if it still fails, check the Edge Function logs in the Supabase dashboard for OpenRouter errors (missing or rate-limited key).
