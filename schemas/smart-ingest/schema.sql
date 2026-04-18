@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS public.ingestion_items (
 CREATE INDEX IF NOT EXISTS ingestion_items_job_idx
   ON public.ingestion_items(job_id);
 
+-- Partial indexes that keep the worker's hot path ("next pending job"
+-- and "next pending/ready item") O(small) even as the historical tail
+-- of completed rows grows unbounded.
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_pending
+  ON public.ingestion_jobs (created_at)
+  WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_ingestion_items_pending
+  ON public.ingestion_items (job_id, created_at)
+  WHERE status IN ('pending', 'ready');
+
 -- ============================================================
 -- 2a. MULTI-TENANT SCOPING (optional)
 --     Add a nullable user_id to both tables so shared (multi-tenant)
