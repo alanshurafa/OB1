@@ -38,11 +38,24 @@ export async function POST(
       headers: { "x-brain-key": apiKey, "Content-Type": "application/json" },
     });
     if (!verifyRes.ok) {
+      // REVIEW-CODEX-3 P2#2: Differentiate transient upstream 5xx from
+      // authorization 4xx so the client can show a retry affordance instead
+      // of a misleading "denied" message.
+      if (verifyRes.status >= 500) {
+        console.error(
+          `[ingest/[id]/execute] preflight upstream 5xx for job ${idNum}:`,
+          verifyRes.status
+        );
+        return NextResponse.json(
+          { error: "Upstream API temporarily unavailable", retryable: true },
+          { status: 503 }
+        );
+      }
       console.error(
         "[ingest/[id]/execute] ownership check failed",
         verifyRes.status
       );
-      // Any non-2xx is treated as "not yours" — don't leak upstream detail
+      // 4xx (403/404) — treat as "not yours" without leaking upstream detail
       return NextResponse.json(
         { error: "Job not found or not accessible" },
         { status: verifyRes.status === 404 ? 404 : 403 }
@@ -64,8 +77,12 @@ export async function POST(
     }
     return NextResponse.json(data);
   } catch (err) {
-    // WR-05: Log detail server-side, return generic to client
+    // REVIEW-CODEX-3 P2#2: Network/fetch throw is transient — signal retryable
+    // rather than a blanket 500 "Failed".
     console.error("[ingest/[id]/execute]", err);
-    return NextResponse.json({ error: "Failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Upstream API temporarily unavailable", retryable: true },
+      { status: 503 }
+    );
   }
 }
