@@ -498,12 +498,17 @@ async function tier3LlmLint(db, args) {
     return out;
   }
 
-  // Pull a recent sample of atomic (non-derived) thoughts
+  // Pull a recent sample of atomic (non-derived) thoughts. Fetch 2x the
+  // requested sample so the post-filter `.slice(0, args.sampleSize)` below
+  // still has enough eligible rows after derived/short thoughts are dropped.
+  // The upper bound mirrors the `--sample-size` validator (max 1000) so we
+  // never silently under-sample when the user asks for 500+ thoughts.
   const since = new Date(Date.now() - args.days * 86_400_000).toISOString();
+  const fetchLimit = Math.min(args.sampleSize * 2, 1000);
   const rows = await db.get(
     `/thoughts?select=id,content,importance,type,source_type,created_at,metadata` +
       `&created_at=gte.${encodeURIComponent(since)}` +
-      `&order=id.desc&limit=${Math.min(args.sampleSize * 2, 500)}`
+      `&order=id.desc&limit=${fetchLimit}`
   );
   const atomic = rows.filter(
     (t) => t?.metadata?.derivation_layer !== "derived" && typeof t.content === "string" && t.content.trim().length >= 20
