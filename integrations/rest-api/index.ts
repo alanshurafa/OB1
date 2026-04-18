@@ -77,13 +77,30 @@ function json(data: unknown, status = 200): Response {
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
+/**
+ * Constant-time string comparison to prevent timing attacks.
+ * Compares byte-by-byte and accumulates differences via XOR so the
+ * total runtime depends only on the longer of the two inputs, not on
+ * where they first differ.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const ae = encoder.encode(a);
+  const be = encoder.encode(b);
+  if (ae.byteLength !== be.byteLength) return false;
+  let diff = 0;
+  for (let i = 0; i < ae.byteLength; i++) diff |= ae[i] ^ be[i];
+  return diff === 0;
+}
+
 function isAuthorized(req: Request): boolean {
   const url = new URL(req.url);
   const key =
     req.headers.get("x-brain-key")?.trim() ||
     url.searchParams.get("key")?.trim() ||
     (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-  return key === MCP_ACCESS_KEY;
+  if (!key) return false;
+  return timingSafeEqual(key, MCP_ACCESS_KEY.trim());
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
