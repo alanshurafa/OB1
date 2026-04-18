@@ -154,6 +154,10 @@ function parseArgs(argv) {
     const date = new Date().toISOString().slice(0, 10);
     args.report = path.join(process.cwd(), `lint-report-${date}.md`);
   }
+  // Refuse report paths that escape cwd — stops typos like `--report=../x`
+  // from silently overwriting unrelated files. The default above is already
+  // under cwd, so only user-supplied values can fail this check.
+  args.report = resolveReportPath(args.report);
   return args;
 }
 
@@ -227,6 +231,49 @@ function makeRestClient(baseUrl, serviceKey) {
   }
 
   return { get, count };
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Make a thought-content snippet safe to embed inside a markdown report
+ * bullet. The report is produced for a human but may also be parsed/rendered
+ * by static site generators, so we defang the characters most likely to
+ * break structure or smuggle markdown:
+ *   - newlines / carriage returns (can introduce fake headings, bullets, HR)
+ *   - backticks (can open/close code fences)
+ *   - square brackets (can form `[text](url)` auto-links)
+ * We also collapse runs of whitespace so long blobs do not distort columns.
+ */
+function sanitizePreview(s) {
+  if (!s) return "";
+  return String(s)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[`\[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Resolve `--report` against the current working directory and reject paths
+ * that escape it. Absolute paths and relative paths that resolve outside
+ * `cwd` (e.g. `--report=../../etc/passwd`) are refused. This is a self-harm
+ * guard, not a security boundary — anyone running the script can pick any
+ * path, but a typo or copy-pasted flag should not overwrite system files.
+ */
+function resolveReportPath(raw) {
+  const cwd = process.cwd();
+  const resolved = path.resolve(cwd, raw);
+  // path.relative returns "" when paths match. Any segment starting with ".."
+  // (or an absolute path on Windows/POSIX) signals traversal out of cwd.
+  const rel = path.relative(cwd, resolved);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+    return resolved;
+  }
+  throw new Error(
+    `--report path must stay inside the current working directory. ` +
+      `Got "${raw}" which resolves to "${resolved}" (outside "${cwd}").`
+  );
 }
 
 // ── Tier 1: SQL-only lint (free) ────────────────────────────────────────────
@@ -361,7 +408,7 @@ async function tier2GraphLint(db, args) {
             id: t.id,
             importance: t.importance,
             created_at: t.created_at,
-            preview: String(t.content || "").slice(0, 120),
+            preview: sanitizePreview(String(t.content || "").slice(0, 120)),
           });
         }
       }
