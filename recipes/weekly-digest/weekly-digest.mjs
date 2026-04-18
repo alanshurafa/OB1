@@ -17,7 +17,7 @@
  *   node weekly-digest.mjs --include-personal      # include sensitivity_tier=personal
  *   node weekly-digest.mjs --model=claude-haiku-4-5-20251001
  *   node weekly-digest.mjs --min-importance=3      # lower threshold
- *   node weekly-digest.mjs --dry-run               # synthesize + print, deliver nothing
+ *   node weekly-digest.mjs --dry-run               # synthesize + print, no delivery (implies --output=stdout)
  *
  * Env vars:
  *   OPEN_BRAIN_URL           Your Supabase project URL (required)
@@ -109,6 +109,13 @@ function parseArgs(argv) {
       throw new Error(`Unknown flag: ${raw}`);
     }
   }
+  // --dry-run implies --output=stdout unless the user explicitly chose
+  // another output. This keeps the smoke-test path friction-free: you can
+  // pass just `--dry-run` without also having to remember `--output=stdout`
+  // to avoid the Telegram credential check.
+  if (args.dryRun && !args.outputExplicit) {
+    args.output = "stdout";
+  }
   return args;
 }
 
@@ -156,13 +163,18 @@ function loadConfig(args) {
 
   let telegramBotToken = null;
   let telegramChatId = null;
-  if (args.output === "telegram") {
+  // Only require Telegram credentials when we will actually send to Telegram.
+  // A --dry-run never ships anywhere, even if --output=telegram is passed,
+  // so it shouldn't demand tokens the user hasn't configured.
+  const willDeliverTelegram = args.output === "telegram" && !args.dryRun;
+  if (willDeliverTelegram) {
     telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
     telegramChatId = process.env.TELEGRAM_CHAT_ID;
     if (!telegramBotToken || !telegramChatId) {
       throw new Error(
         "--output=telegram requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars. " +
-          "Use --output=stdout or --output=file if you don't have Telegram configured.",
+          "Use --output=stdout or --output=file if you don't have Telegram configured, " +
+          "or pass --dry-run to synthesize without delivery.",
       );
     }
   }
