@@ -29,9 +29,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  fetchWithTimeout,
+  resolveTimeoutMs,
+  DEFAULT_LLM_TIMEOUT_MS,
+  DEFAULT_SUPABASE_TIMEOUT_MS,
+} from "./lib/memory-core.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Per-call fetch timeouts. FETCH_TIMEOUT_MS in .env.local overrides both.
+const LLM_TIMEOUT_MS = resolveTimeoutMs(process.env.FETCH_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS);
+const SUPABASE_TIMEOUT_MS = resolveTimeoutMs(process.env.FETCH_TIMEOUT_MS, DEFAULT_SUPABASE_TIMEOUT_MS);
 
 const ALLOWED_TYPES = new Set([
   "idea", "task", "person_note", "reference",
@@ -109,7 +119,7 @@ const ENRICHED_VERSION = 1;
 // --- LLM Provider Calls ---
 
 async function callAnthropic(userInput, config) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": config.anthropicApiKey,
@@ -123,7 +133,7 @@ async function callAnthropic(userInput, config) {
       system: CLASSIFICATION_PROMPT,
       messages: [{ role: "user", content: userInput }],
     }),
-  });
+  }, LLM_TIMEOUT_MS);
 
   if (!res.ok) {
     const body = await res.text();
@@ -135,7 +145,7 @@ async function callAnthropic(userInput, config) {
 }
 
 async function callOpenRouter(userInput, config) {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.openRouterApiKey}`,
@@ -150,7 +160,7 @@ async function callOpenRouter(userInput, config) {
         { role: "user", content: userInput },
       ],
     }),
-  });
+  }, LLM_TIMEOUT_MS);
 
   if (!res.ok) {
     const body = await res.text();
@@ -172,9 +182,12 @@ async function withRetry(fn, maxRetries = 3) {
       return await fn();
     } catch (err) {
       const msg = err.message || "";
+      const name = err.name || "";
       const is429 = msg.includes("429");
       const is5xx = /\b5\d{2}\b/.test(msg);
-      if (attempt === maxRetries || (!is429 && !is5xx)) throw err;
+      const isAbort = name === "AbortError" || msg.includes("Timeout after") || msg.includes("aborted");
+      const retriable = is429 || is5xx || isAbort;
+      if (attempt === maxRetries || !retriable) throw err;
       const delay = is429
         ? Math.min(30000, 2000 * Math.pow(2, attempt))
         : 1000 * (attempt + 1);
@@ -456,7 +469,7 @@ async function fetchUnenriched(config, cursor, limit) {
     url.searchParams.set("offset", String(cursor.offset));
   }
 
-  const res = await fetch(url, { headers: supabaseHeaders(config) });
+  const res = await fetchWithTimeout(url, { headers: supabaseHeaders(config) }, SUPABASE_TIMEOUT_MS);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Fetch un-enriched failed (${res.status}): ${body.substring(0, 300)}`);
@@ -469,7 +482,7 @@ async function fetchByIds(config, ids) {
   if (ids.length === 0) return [];
   const idList = ids.join(",");
   const url = `${config.supabaseUrl}/rest/v1/thoughts?select=id,content,source_type,metadata&id=in.(${idList})`;
-  const res = await fetch(url, { headers: supabaseHeaders(config) });
+  const res = await fetchWithTimeout(url, { headers: supabaseHeaders(config) }, SUPABASE_TIMEOUT_MS);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Fetch by IDs failed (${res.status}): ${body.substring(0, 300)}`);
@@ -484,7 +497,7 @@ async function patchThought(id, patch, config) {
     body.metadata = JSON.stringify(body.metadata);
   }
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "PATCH",
     headers: {
       ...supabaseHeaders(config),
@@ -492,13 +505,13 @@ async function patchThought(id, patch, config) {
       Prefer: "return=minimal",
     },
     body: JSON.stringify(body),
-  });
+  }, SUPABASE_TIMEOUT_MS);
 
   if (!res.ok) {
     const text = await res.text();
     // Retry once after 2s
     await sleep(2000);
-    const res2 = await fetch(url, {
+    const res2 = await fetchWithTimeout(url, {
       method: "PATCH",
       headers: {
         ...supabaseHeaders(config),
@@ -506,7 +519,7 @@ async function patchThought(id, patch, config) {
         Prefer: "return=minimal",
       },
       body: JSON.stringify(body),
-    });
+    }, SUPABASE_TIMEOUT_MS);
     if (!res2.ok) {
       const text2 = await res2.text();
       throw new Error(`PATCH thought ${id} failed after retry (${res2.status}): ${text2.substring(0, 200)}`);
@@ -516,12 +529,13 @@ async function patchThought(id, patch, config) {
 
 async function countByEnriched(config) {
   const countReq = async (enrichedVal) => {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${config.supabaseUrl}/rest/v1/thoughts?select=id&enriched=eq.${enrichedVal}`,
       {
         method: "HEAD",
         headers: { ...supabaseHeaders(config), Prefer: "count=exact" },
-      }
+      },
+      SUPABASE_TIMEOUT_MS
     );
     const range = res.headers.get("content-range");
     const match = range?.match(/\/(\d+)/);

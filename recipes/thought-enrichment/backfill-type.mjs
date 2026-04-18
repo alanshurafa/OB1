@@ -11,8 +11,15 @@
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import {
+  fetchWithTimeout,
+  resolveTimeoutMs,
+  DEFAULT_SUPABASE_TIMEOUT_MS,
+} from "./lib/memory-core.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const SUPABASE_TIMEOUT_MS = resolveTimeoutMs(process.env.FETCH_TIMEOUT_MS, DEFAULT_SUPABASE_TIMEOUT_MS);
 
 // Load env
 function loadEnv() {
@@ -72,7 +79,20 @@ async function sleep(ms) {
 async function fetchBatch(offset, retries = 4) {
   const url = `${BASE}/thoughts?select=id,metadata->>type&type=eq.reference&limit=${BATCH_SIZE}&offset=${offset}`;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const r = await fetch(url, { headers: { ...headers, Prefer: "count=exact" } });
+    let r;
+    try {
+      r = await fetchWithTimeout(url, { headers: { ...headers, Prefer: "count=exact" } }, SUPABASE_TIMEOUT_MS);
+    } catch (err) {
+      // Treat AbortError/timeouts and other network errors as transient.
+      const msg = err?.message || String(err);
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 16000);
+        process.stderr.write(`\n[retry] fetch offset ${offset} ${msg.slice(0, 120)}, waiting ${delay}ms\n`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
     if (r.ok) {
       const contentRange = r.headers.get("content-range");
       const total = contentRange ? parseInt(contentRange.split("/")[1], 10) : null;
@@ -94,11 +114,23 @@ async function fetchBatch(offset, retries = 4) {
 async function updateRow(id, newType, retries = 6) {
   const url = `${BASE}/thoughts?id=eq.${id}`;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const r = await fetch(url, {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify({ type: newType }),
-    });
+    let r;
+    try {
+      r = await fetchWithTimeout(url, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ type: newType }),
+      }, SUPABASE_TIMEOUT_MS);
+    } catch (err) {
+      const msg = err?.message || String(err);
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 16000);
+        process.stderr.write(`\n[retry] id ${id} ${msg.slice(0, 120)}, waiting ${delay}ms (attempt ${attempt + 1}/${retries})\n`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
     if (r.ok) return;
     const body = await r.text();
     const isTransient = r.status === 502 || r.status === 503 || r.status === 504 || r.status === 429;

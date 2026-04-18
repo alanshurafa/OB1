@@ -13,8 +13,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  fetchWithTimeout,
+  resolveTimeoutMs,
+  DEFAULT_SUPABASE_TIMEOUT_MS,
+} from "./lib/memory-core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const SUPABASE_TIMEOUT_MS = resolveTimeoutMs(process.env.FETCH_TIMEOUT_MS, DEFAULT_SUPABASE_TIMEOUT_MS);
 
 // Load env from .env.local
 const envPath = path.resolve(__dirname, ".env.local");
@@ -102,7 +109,7 @@ let errors = 0;
 
 while (true) {
   const url = `${BASE_URL}/thoughts?select=id,content,sensitivity_tier&or=(sensitivity_tier.is.null,sensitivity_tier.eq.standard,sensitivity_tier.eq.)&order=id&offset=${offset}&limit=${BATCH_SIZE}`;
-  const res = await fetch(url, { headers });
+  const res = await fetchWithTimeout(url, { headers }, SUPABASE_TIMEOUT_MS);
 
   if (!res.ok) {
     console.error(`Query error at offset ${offset}: ${res.status} ${await res.text()}`);
@@ -123,11 +130,11 @@ while (true) {
 
       if (apply) {
         const updateUrl = `${BASE_URL}/thoughts?id=eq.${row.id}`;
-        const updateRes = await fetch(updateUrl, {
+        const updateRes = await fetchWithTimeout(updateUrl, {
           method: "PATCH",
           headers,
           body: JSON.stringify({ sensitivity_tier: result.tier }),
-        });
+        }, SUPABASE_TIMEOUT_MS);
 
         if (!updateRes.ok) {
           console.error(`  Failed to update thought #${row.id}: ${updateRes.status}`);
