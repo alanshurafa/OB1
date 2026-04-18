@@ -20,7 +20,7 @@ Placeholder. See [`docs/screenshots/README.md`](docs/screenshots/README.md) for 
 ## Prerequisites
 
 - Working Open Brain setup ([guide](../../docs/01-getting-started.md))
-- The [REST API gateway integration](../rest-api/) deployed and reachable — the extension POSTs to `/open-brain-rest/ingest` and pings `/open-brain-rest/health`
+- The [REST API gateway integration (PR #201)](https://github.com/NateBJones-Projects/OB1/pull/201) deployed and reachable — the extension POSTs to `/open-brain-rest/ingest` and pings `/open-brain-rest/health`
 - An `MCP_ACCESS_KEY` (or equivalent `x-brain-key` token) issued by your Open Brain for this device
 - Chrome 120+, or any Chromium-based browser that supports MV3 (Edge 120+, Brave, Arc, Opera)
 
