@@ -515,6 +515,7 @@ async function classifyAndUpdate(thought, config, budget) {
       enriched_version: ENRICHED_VERSION,
       enriched_at: new Date().toISOString(),
       enriched_model: resolveModelLabel(config),
+      enriched_provider: config.provider,
     },
   };
 
@@ -762,11 +763,26 @@ function buildConfig(args, env) {
     ? parseInt(args.maxCalls, 10)
     : parseInt(env.ENRICH_MAX_CALLS || "10000", 10);
   const maxCalls = Number.isFinite(rawMaxCalls) && rawMaxCalls >= 0 ? rawMaxCalls : 10000;
+
+  // --limit: positive integer, or omitted for unlimited. Reject 0 /
+  // NaN / negatives so `--limit 0` or `--limit foo` does not silently
+  // mean "unlimited" (LOW-5). Combined with BLOCKER-1's --max-calls
+  // this closes the "shell typo = unbounded spend" class of failures.
+  let limit = 0;
+  if (args.limit !== undefined) {
+    const parsed = parseInt(args.limit, 10);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      console.error(`ERROR: --limit must be a positive integer; got "${args.limit}"`);
+      process.exit(1);
+    }
+    limit = parsed;
+  }
+
   return {
     provider,
     concurrency: parseInt(args.concurrency || "20", 10),
     skip: parseInt(args.skip || "0", 10),
-    limit: parseInt(args.limit || "0", 10) || 0,
+    limit,
     maxCalls,
     dryRun: !!args.dryRun,
     apply: !!args.apply,
