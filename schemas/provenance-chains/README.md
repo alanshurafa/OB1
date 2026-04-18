@@ -16,6 +16,7 @@ It also installs three helper functions (all `SECURITY DEFINER`, all **granted t
 - `trace_provenance(thought_id UUID, max_depth INT, node_cap INT)` — walks `derived_from` upward and returns a flat ancestor rowset with depth, cycle detection, and restricted-tier redaction.
 - `find_derivatives(thought_id UUID, limit INT)` — reverse lookup via the GIN index; "what derived artifacts cite this atomic thought?" Restricted rows are always filtered out; there is no client-visible override.
 - `merge_thought_provenance_metadata(thought_id UUID, provenance JSONB)` — atomically merges a provenance subtree into `metadata.provenance` server-side. The recipe uses this to avoid read-modify-write races with other writers (e.g., `eval.mjs`) that update the same `metadata` blob.
+- `merge_thought_eval_metadata(thought_id UUID, eval JSONB)` — is the race-free sibling for `eval.mjs`, avoiding stale-write conflicts with backfill's provenance merge. It performs a flat top-level `||` concat so eval's flat keys (`eval_score`, `eval_dimensions`, `eval_rationale`, `eval_graded_at`, `eval_grader`) replace their own values while preserving everything else (including `metadata.provenance`).
 
 These functions power the **Provenance Chains Pipeline** recipe (backfill, eval, and MCP tool handlers).
 

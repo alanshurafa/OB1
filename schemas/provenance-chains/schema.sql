@@ -360,7 +360,51 @@ GRANT EXECUTE ON FUNCTION public.merge_thought_provenance_metadata(UUID, JSONB)
   TO service_role;
 
 -- ============================================================
--- 8. RELOAD PostgREST SCHEMA CACHE
+-- 8. HELPER: merge_thought_eval_metadata
+--    Race-free sibling of merge_thought_provenance_metadata for
+--    eval.mjs. eval writes flat top-level metadata keys
+--    (eval_score, eval_dimensions, eval_rationale, eval_graded_at,
+--    eval_grader); previously it did GET metadata → mutate in JS →
+--    PATCH whole metadata, which is a read-modify-write race
+--    against backfill's provenance merge. If backfill's RPC lands
+--    between eval's GET and PATCH, eval's stale snapshot would
+--    silently overwrite metadata.provenance.
+--
+--    This RPC performs a flat top-level merge via `||` concat, so
+--    eval's keys replace their own values while all other keys
+--    (including metadata.provenance written by backfill) are
+--    preserved server-side. Idempotent re-running produces the
+--    same blob.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.merge_thought_eval_metadata(
+  p_thought_id UUID,
+  p_eval JSONB
+) RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_thought_id IS NULL THEN
+    RETURN;
+  END IF;
+
+  UPDATE public.thoughts
+  SET metadata = COALESCE(metadata, '{}'::jsonb) || COALESCE(p_eval, '{}'::jsonb)
+  WHERE id = p_thought_id;
+END;
+$$;
+
+-- Service-role-only (same reasoning as the other provenance RPCs).
+REVOKE EXECUTE ON FUNCTION public.merge_thought_eval_metadata(UUID, JSONB) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.merge_thought_eval_metadata(UUID, JSONB) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.merge_thought_eval_metadata(UUID, JSONB) FROM anon;
+GRANT EXECUTE ON FUNCTION public.merge_thought_eval_metadata(UUID, JSONB)
+  TO service_role;
+
+-- ============================================================
+-- 9. RELOAD PostgREST SCHEMA CACHE
 -- ============================================================
 
 NOTIFY pgrst, 'reload schema';
