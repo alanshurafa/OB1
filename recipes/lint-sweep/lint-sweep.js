@@ -47,6 +47,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -129,8 +130,8 @@ function parseArgs(argv) {
     else if (a === "--sample-size") args.sampleSize = parseNumberFlag(argv[++i], 100);
     else if (a.startsWith("--max-llm-calls=")) args.maxLlmCalls = parseNumberFlag(a.slice(16), 5);
     else if (a === "--max-llm-calls") args.maxLlmCalls = parseNumberFlag(argv[++i], 5);
-    else if (a.startsWith("--report=")) args.report = a.slice(9);
-    else if (a === "--report") args.report = argv[++i];
+    else if (a.startsWith("--report=")) args.report = expandHome(a.slice(9));
+    else if (a === "--report") args.report = expandHome(argv[++i]);
     else if (a.startsWith("--days=")) args.days = parseNumberFlag(a.slice(7), 365);
     else if (a === "--days") args.days = parseNumberFlag(argv[++i], 365);
     else if (a.startsWith("--llm-model=")) args.llmModel = a.slice(12);
@@ -154,9 +155,11 @@ function parseArgs(argv) {
     const date = new Date().toISOString().slice(0, 10);
     args.report = path.join(process.cwd(), `lint-report-${date}.md`);
   }
-  // Refuse report paths that escape cwd — stops typos like `--report=../x`
-  // from silently overwriting unrelated files. The default above is already
-  // under cwd, so only user-supplied values can fail this check.
+  // Expand `~/` and refuse relative paths that climb out of cwd. Absolute
+  // paths (including `~/lint-reports/...`, `/tmp/...`, `C:/tmp/...`) are
+  // accepted so scheduled jobs can write outside the repo. The default above
+  // is already absolute and under cwd, so only user-supplied values are
+  // rewritten here.
   args.report = resolveReportPath(args.report);
   return args;
 }
@@ -260,24 +263,50 @@ function sanitizePreview(s) {
 }
 
 /**
- * Resolve `--report` against the current working directory and reject paths
- * that escape it. Absolute paths and relative paths that resolve outside
- * `cwd` (e.g. `--report=../../etc/passwd`) are refused. This is a self-harm
- * guard, not a security boundary — anyone running the script can pick any
- * path, but a typo or copy-pasted flag should not overwrite system files.
+ * Expand a leading `~/` (or bare `~`) to the current user's home directory.
+ * Only the prefix form is handled — embedded `~` elsewhere in the string is
+ * treated as a literal character, matching shell-style behaviour.
+ */
+function expandHome(raw) {
+  if (typeof raw !== "string" || raw.length === 0) return raw;
+  if (raw === "~") return os.homedir();
+  if (raw.startsWith("~/") || raw.startsWith("~\\")) {
+    return path.join(os.homedir(), raw.slice(2));
+  }
+  return raw;
+}
+
+/**
+ * Resolve `--report` and reject only true directory traversal. Absolute paths
+ * (home-expanded, temp dirs, Windows drive paths) are accepted so scheduled
+ * jobs can write outside `cwd` — this is a self-harm guard, not a security
+ * boundary. We still refuse relative paths whose resolved form climbs out of
+ * `cwd` (e.g. `--report=../../etc/passwd`) because that almost always means a
+ * typo or copy-pasted flag.
  */
 function resolveReportPath(raw) {
+  const expanded = expandHome(raw);
   const cwd = process.cwd();
-  const resolved = path.resolve(cwd, raw);
-  // path.relative returns "" when paths match. Any segment starting with ".."
-  // (or an absolute path on Windows/POSIX) signals traversal out of cwd.
+  const resolved = path.resolve(cwd, expanded);
+
+  // Absolute inputs (after `~/` expansion) are trusted — the user stated an
+  // explicit path. Only relative inputs need traversal validation.
+  if (path.isAbsolute(expanded)) {
+    return resolved;
+  }
+
   const rel = path.relative(cwd, resolved);
+  // A relative input is safe when the resolved path stays inside cwd. That
+  // means `path.relative` returns either "" or a non-empty string that does
+  // NOT start with ".." and is NOT itself absolute (rare cross-drive case on
+  // Windows, where path.relative can return an absolute path).
   if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
     return resolved;
   }
   throw new Error(
-    `--report path must stay inside the current working directory. ` +
-      `Got "${raw}" which resolves to "${resolved}" (outside "${cwd}").`
+    `--report path must not traverse above the current working directory. ` +
+      `Got "${raw}" which resolves to "${resolved}" (outside "${cwd}"). ` +
+      `Use an absolute path (e.g. /tmp/report.md or ~/lint-reports/report.md) instead.`
   );
 }
 
