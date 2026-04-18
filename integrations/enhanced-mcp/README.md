@@ -6,7 +6,7 @@
 
 This integration deploys a second MCP server alongside the stock Open Brain server. It adds semantic and full-text search modes, content dedup via SHA-256 fingerprinting, automatic LLM-powered metadata classification, sensitivity detection (restricted content is blocked from cloud capture), and operational monitoring tools that light up when optional schemas are installed.
 
-The original `server/` connector remains untouched. You can run both side by side and disable the original when you are ready.
+The original `server/` connector remains untouched and safe to leave connected: the four tools that would otherwise collide (`capture_thought`, `search_thoughts`, `list_thoughts`, `thought_stats`) are namespaced with a `brain_` prefix in this server, so both tool sets can coexist without the model seeing duplicate names.
 
 ## Prerequisites
 
@@ -80,10 +80,12 @@ You can also pass the key as a query parameter: `?key=<your-mcp-access-key>`.
 
 Verify the enhanced server is working by testing these tools in your AI client:
 
-1. **`capture_thought`** — Save a test thought: "Testing the enhanced MCP server setup"
-2. **`search_thoughts`** — Search for "testing" to find the thought you just captured
-3. **`thought_stats`** — View your brain's type and topic distribution
-4. **`list_thoughts`** — Browse recent thoughts with filters
+1. **`brain_capture_thought`** — Save a test thought: "Testing the enhanced MCP server setup"
+2. **`brain_search_thoughts`** — Search for "testing" to find the thought you just captured
+3. **`brain_thought_stats`** — View your brain's type and topic distribution
+4. **`brain_list_thoughts`** — Browse recent thoughts with filters
+
+> The four tools that overlap with the stock server are prefixed with `brain_` in this integration (`brain_capture_thought`, `brain_search_thoughts`, `brain_list_thoughts`, `brain_thought_stats`). That way you can run both servers side by side without the model seeing two tools under the same name. The stock `capture_thought` / `search_thoughts` / `list_thoughts` / `thought_stats` remain available on the original connector; this server adds `brain_*` variants with extended filters, enriched metadata, sensitivity detection, and content-fingerprint dedup.
 
 ### 5. Enable Schema-Backed Tools (Optional)
 
@@ -100,20 +102,20 @@ If a required schema is not installed, the tool returns a clear message explaini
 
 ## Expected Outcome
 
-After completing the steps above, you should have 13 tools available in your AI client under the "Open Brain Enhanced" connector. Running `capture_thought` should save a thought with automatic type classification, topic extraction, and sensitivity detection. Running `search_thoughts` should return results with similarity scores. Running `thought_stats` should show your brain's statistics using server-side aggregation.
+After completing the steps above, you should have 13 tools available in your AI client under the "Open Brain Enhanced" connector. Running `brain_capture_thought` should save a thought with automatic type classification, topic extraction, and sensitivity detection. Running `brain_search_thoughts` should return results with similarity scores. Running `brain_thought_stats` should show your brain's statistics using server-side aggregation.
 
-If you also have the original `server/` connector active, you will temporarily see both tool sets. Once you have verified the enhanced server works, you can disable the original connector to reduce tool count.
+If you also have the original `server/` connector active, you will see both tool sets. Thanks to the `brain_` prefix on the four overlapping tools, there are no duplicate tool names — the enhanced versions expose extended filters, sensitivity detection, and content-fingerprint dedup; the stock versions remain the minimal default. You can disable either connector at any time to reduce tool count.
 
 ## Tool Reference
 
 | # | Tool | Description | Schema Required |
 |---|------|-------------|-----------------|
-| 1 | `search_thoughts` | Semantic vector or full-text search with date and metadata filters | Enhanced Thoughts |
-| 2 | `list_thoughts` | Paginated browsing with type, source, date filters and sorting | Enhanced Thoughts |
+| 1 | `brain_search_thoughts` | Semantic vector or full-text search with date and metadata filters | Enhanced Thoughts |
+| 2 | `brain_list_thoughts` | Paginated browsing with type, source, date filters and sorting | Enhanced Thoughts |
 | 3 | `get_thought` | Fetch a single thought by ID with full metadata | Enhanced Thoughts |
 | 4 | `update_thought` | Update content with automatic re-embedding and re-classification | Enhanced Thoughts |
-| 5 | `capture_thought` | Capture with dedup, sensitivity detection, and LLM classification | Enhanced Thoughts |
-| 6 | `thought_stats` | Type and topic statistics via server-side aggregation | Enhanced Thoughts |
+| 5 | `brain_capture_thought` | Capture with dedup, sensitivity detection, and LLM classification | Enhanced Thoughts |
+| 6 | `brain_thought_stats` | Type and topic statistics via server-side aggregation | Enhanced Thoughts |
 | 7 | `search_thoughts_text` | Direct full-text search (faster for exact phrase matching) | Enhanced Thoughts |
 | 8 | `count_thoughts` | Fast filtered count without returning content | Enhanced Thoughts |
 | 9 | `related_thoughts` | Find thoughts connected by shared topics or people | Enhanced Thoughts |

@@ -84,14 +84,14 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// ── 1. search_thoughts ──────────────────────────────────────────────────
+// ── 1. brain_search_thoughts ────────────────────────────────────────────
 
 server.registerTool(
-  "search_thoughts",
+  "brain_search_thoughts",
   {
-    title: "Search Thoughts",
+    title: "Search Thoughts (Enhanced)",
     description:
-      "Search over your stored thoughts. Supports semantic (vector) and text (full-text) modes.",
+      "Search over your stored thoughts. Supports semantic (vector) and text (full-text) modes. Namespaced with brain_ prefix to avoid collision with the stock search_thoughts tool when both MCP servers are connected.",
     inputSchema: z.object({
       query: z.string().min(2).describe("Search query"),
       mode: z
@@ -239,20 +239,20 @@ server.registerTool(
 
       return toolSuccess(lines.join("\n"), { results: rows });
     } catch (error) {
-      console.error("search_thoughts failed", error);
+      console.error("brain_search_thoughts failed", error);
       return toolFailure(String(error));
     }
   },
 );
 
-// ── 2. list_thoughts ────────────────────────────────────────────────────
+// ── 2. brain_list_thoughts ──────────────────────────────────────────────
 
 server.registerTool(
-  "list_thoughts",
+  "brain_list_thoughts",
   {
-    title: "List Thoughts",
+    title: "List Thoughts (Enhanced)",
     description:
-      "Enhanced listing of thoughts with filters, sorting, and pagination.",
+      "Enhanced listing of thoughts with filters, sorting, and pagination. Namespaced with brain_ prefix to avoid collision with the stock list_thoughts tool when both MCP servers are connected.",
     inputSchema: z.object({
       limit: z.number().int().min(1).max(100).default(20).optional(),
       offset: z.number().int().min(0).default(0).optional(),
@@ -328,7 +328,7 @@ server.registerTool(
 
       if (dataRes.error) {
         throw new Error(
-          `list_thoughts query failed: ${dataRes.error.message}`,
+          `brain_list_thoughts query failed: ${dataRes.error.message}`,
         );
       }
 
@@ -351,7 +351,7 @@ server.registerTool(
         pagination: { total, offset, limit, has_more: hasMore },
       });
     } catch (error) {
-      console.error("list_thoughts failed", error);
+      console.error("brain_list_thoughts failed", error);
       return toolFailure(String(error));
     }
   },
@@ -512,8 +512,8 @@ server.registerTool(
       // If an existing `personal` thought is edited to remove the sensitive
       // phrasing, the row stays `personal` rather than silently becoming
       // `standard` and leaking into broad list/search responses. This
-      // matches the invariant enforced in capture_thought's pipeline via
-      // resolveSensitivityTier (existing tier acts as the floor).
+      // matches the invariant enforced in brain_capture_thought's pipeline
+      // via resolveSensitivityTier (existing tier acts as the floor).
       const resolvedTier = resolveSensitivityTier(
         sensitivity.tier,
         existing.sensitivity_tier ?? undefined,
@@ -566,7 +566,7 @@ server.registerTool(
   },
 );
 
-// ── 5. capture_thought ──────────────────────────────────────────────────
+// ── 5. brain_capture_thought ────────────────────────────────────────────
 //
 // NOTE: `delete_thought` is intentionally not shipped in this initial PR.
 // Hard `DELETE FROM thoughts WHERE id = ?` is irreversible and the
@@ -580,11 +580,11 @@ server.registerTool(
 
 
 server.registerTool(
-  "capture_thought",
+  "brain_capture_thought",
   {
-    title: "Capture Thought",
+    title: "Capture Thought (Enhanced)",
     description:
-      "Capture a new thought with automatic dedup by content fingerprint. Runs full enrichment pipeline.",
+      "Capture a new thought with automatic dedup by content fingerprint. Runs full enrichment pipeline including sensitivity detection, LLM-powered classification, and structured-capture parsing. Namespaced with brain_ prefix to avoid collision with the stock capture_thought tool when both MCP servers are connected.",
     inputSchema: z.object({
       content: z.string().min(1),
       source: z.string().default("mcp").optional(),
@@ -683,20 +683,20 @@ server.registerTool(
         },
       );
     } catch (error) {
-      console.error("capture_thought failed", error);
+      console.error("brain_capture_thought failed", error);
       return toolFailure(String(error));
     }
   },
 );
 
-// ── 6. thought_stats ────────────────────────────────────────────────────
+// ── 6. brain_thought_stats ──────────────────────────────────────────────
 
 server.registerTool(
-  "thought_stats",
+  "brain_thought_stats",
   {
-    title: "Thought Statistics",
+    title: "Thought Statistics (Enhanced)",
     description:
-      "Summaries of thought type/topic activity. Uses server-side aggregation for accurate counts across entire brain.",
+      "Summaries of thought type/topic activity. Uses server-side aggregation for accurate counts across entire brain. Namespaced with brain_ prefix to avoid collision with the stock thought_stats tool when both MCP servers are connected.",
     inputSchema: z.object({
       since_days: z
         .number()
@@ -749,7 +749,7 @@ server.registerTool(
         top_topics: topTopics,
       });
     } catch (error) {
-      console.error("thought_stats failed", error);
+      console.error("brain_thought_stats failed", error);
       return toolFailure(String(error));
     }
   },
