@@ -484,16 +484,27 @@ async function synthesize(cfg, thoughts, windowDays, model) {
 
 /**
  * Telegram text messages cap at 4096 chars. If the digest goes over, split
- * on paragraph boundaries so we don't chop mid-bullet.
+ * cleanly: prefer a paragraph break (double newline), then a single newline,
+ * then a word boundary (space), then — only as a last resort — a hard cut.
+ *
+ * The tiered fallback matters when a single paragraph is itself longer than
+ * the chunk limit: without the word-boundary step we'd hard-cut mid-word
+ * and produce ugly output. The `< limit * 0.5` guard avoids making a tiny
+ * chunk when the best boundary is near the start of the window.
  */
 function chunkForTelegram(text, limit = TELEGRAM_CHUNK_LIMIT) {
   if (text.length <= limit) return [text];
   const chunks = [];
   let remaining = text;
   while (remaining.length > limit) {
-    // Prefer to break on a double newline (paragraph), else single newline.
+    // 1. Paragraph boundary (preferred).
     let cut = remaining.lastIndexOf("\n\n", limit);
+    // 2. Single-newline boundary.
     if (cut < limit * 0.5) cut = remaining.lastIndexOf("\n", limit);
+    // 3. Word boundary — catches the "one long paragraph" edge case where the
+    //    LLM emits a wall of prose with no \n inside the chunk limit.
+    if (cut < limit * 0.5) cut = remaining.lastIndexOf(" ", limit);
+    // 4. Hard cut — last resort, only if nothing useful was found.
     if (cut < limit * 0.5) cut = limit;
     chunks.push(remaining.slice(0, cut).trimEnd());
     remaining = remaining.slice(cut).trimStart();
