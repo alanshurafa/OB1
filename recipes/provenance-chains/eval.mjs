@@ -208,7 +208,9 @@ async function fetchCandidates(args) {
   // merge_thought_provenance_metadata and silently erase metadata.provenance.
   // eval_graded_at is only used to skip already-graded rows; all other eval
   // fields are written via the merge_thought_eval_metadata RPC.
-  const select = "select=id,source_type:metadata->>source_type,type:metadata->>type,eval_graded_at:metadata->>eval_graded_at,content,derived_from,derivation_layer";
+  // created_at is included so the --limit path can use it as the keyset
+  // cursor; harmless overhead for --ids mode, which ignores it.
+  const select = "select=id,created_at,source_type:metadata->>source_type,type:metadata->>type,eval_graded_at:metadata->>eval_graded_at,content,derived_from,derivation_layer";
 
   // --ids mode: single fetch, no pagination. Caller supplied an explicit
   // id list, so there is no "scan the table for eligible rows" problem.
@@ -231,17 +233,46 @@ async function fetchCandidates(args) {
   // backlog of already-graded or empty-derived_from rows accumulated
   // ahead of older eligible rows — see REVIEW-CODEX-9 P2 #2. PostgREST
   // can't cleanly filter on `metadata->>eval_graded_at IS NULL` so we
-  // page server-side with `limit`+`offset` and filter client-side.
+  // page server-side and filter client-side.
+  //
+  // Pagination strategy is keyset on (created_at DESC, id DESC), NOT
+  // offset. Offset pagination has two failure modes we hit here:
+  //   1. Rows sharing created_at are non-deterministic in ORDER BY
+  //      without a tiebreaker, so page boundaries can skip or duplicate
+  //      the tied rows.
+  //   2. New inserts between page fetches shift the offset window and
+  //      rows get double-counted or skipped.
+  // Keyset uses the last row's (created_at, id) of the previous page
+  // as a cursor predicate, so new inserts above the cursor are simply
+  // ignored and tied created_at values resolve deterministically on id.
+  //
+  // PostgREST predicate shape for DESC keyset is:
+  //   or=(created_at.lt.X,and(created_at.eq.X,id.lt.Y))
+  // Built by hand (not via URLSearchParams) because URLSearchParams
+  // re-encodes the structural commas and parens and breaks the or()
+  // syntax. We encodeURIComponent only the cursor values — ISO
+  // timestamps contain ':' and '+' that must be percent-encoded.
   const PAGE_SIZE = 100;
   const MAX_PAGES = 10; // safety cap: 1000 rows scanned before bailing out
   const collected = [];
   let page = 0;
+  let cursor = null; // { createdAt, id } from the previous page's last row
   let exhausted = false;
   while (collected.length < args.limit && page < MAX_PAGES) {
-    const offset = page * PAGE_SIZE;
-    const query =
-      `thoughts?${select}&order=created_at.desc&derivation_layer=eq.derived` +
-      `&limit=${PAGE_SIZE}&offset=${offset}`;
+    const parts = [
+      select,
+      `order=created_at.desc,id.desc`,
+      `derivation_layer=eq.derived`,
+      `limit=${PAGE_SIZE}`,
+    ];
+    if (cursor) {
+      const encX = encodeURIComponent(cursor.createdAt);
+      const encY = encodeURIComponent(cursor.id);
+      parts.push(
+        `or=(created_at.lt.${encX},and(created_at.eq.${encX},id.lt.${encY}))`,
+      );
+    }
+    const query = `thoughts?${parts.join("&")}`;
     const rows = await sbGet(query);
     if (!Array.isArray(rows) || rows.length === 0) {
       exhausted = true;
@@ -254,6 +285,12 @@ async function fetchCandidates(args) {
       collected.push(r);
       if (collected.length >= args.limit) break;
     }
+    // Advance the cursor BEFORE the short-page check so the next
+    // iteration (if any) would continue past this row. Using the last
+    // row actually returned by PostgREST, not the last eligible row we
+    // kept — the server-side ORDER BY is what the cursor has to match.
+    const last = rows[rows.length - 1];
+    cursor = { createdAt: last.created_at, id: last.id };
     // If the page came back short, no further pages exist.
     if (rows.length < PAGE_SIZE) {
       exhausted = true;
