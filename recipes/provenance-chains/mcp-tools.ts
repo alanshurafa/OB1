@@ -116,8 +116,17 @@ server.registerTool(
       };
 
       // Index rows by child -> list of parent rows so we can walk upward.
-      // Row shape: one row per visited (child, parent) edge, plus one row
-      // for the root itself (parent_id = null).
+      //
+      // SQL contract (schema.sql recursive CTE):
+      //   - anchor row: thought_id = root, parent_id = NULL
+      //   - step row:   thought_id = parent.id (the upstream node we just
+      //                 reached), parent_id = w.thought_id (the downstream
+      //                 node we walked from)
+      //
+      // So each step row encodes the edge "parent_id (child) ← thought_id
+      // (parent)". To build child→parents we index by r.parent_id (the
+      // child) and push r.thought_id (the parent). The naming is counter-
+      // intuitive but matches schema.sql:185,187 exactly.
       const rowsById = new Map<string, TraceRow>();
       const parentIdsByChild = new Map<string, string[]>();
       for (const r of rows) {
@@ -126,9 +135,11 @@ server.registerTool(
         // the edge's parent_id field.
         if (!rowsById.has(r.thought_id)) rowsById.set(r.thought_id, r);
         if (r.parent_id) {
-          const arr = parentIdsByChild.get(r.thought_id) ?? [];
-          if (!arr.includes(r.parent_id)) arr.push(r.parent_id);
-          parentIdsByChild.set(r.thought_id, arr);
+          // r.parent_id is the CHILD (downstream) in this edge.
+          // r.thought_id is the PARENT (upstream) in this edge.
+          const arr = parentIdsByChild.get(r.parent_id) ?? [];
+          if (!arr.includes(r.thought_id)) arr.push(r.thought_id);
+          parentIdsByChild.set(r.parent_id, arr);
         }
       }
 
