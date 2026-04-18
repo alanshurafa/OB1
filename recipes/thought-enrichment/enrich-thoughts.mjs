@@ -25,6 +25,7 @@
  *   --model <name>        Model override (default per provider)
  *   --retry-failed        Re-process previously failed thought IDs
  *   --max-calls <n>       Hard ceiling on LLM calls (default: 10000, 0 = unlimited)
+ *   --reset-state         Ignore saved checkpoint and restart from id > 0
  */
 
 import fs from "node:fs";
@@ -334,8 +335,26 @@ async function main() {
   }
 
   // -- Normal enrichment mode --
+  // Seed the cursor from state.lastProcessedId so a resumed run picks up
+  // where the previous one left off. If the user passed --skip we honor
+  // that and ignore the checkpoint (explicit user intent wins); same if
+  // --reset-state was passed. Without either, last-processed-id + 0 is
+  // the correct resume point: the `enriched=eq.false` filter would still
+  // eventually dedupe, but seeding the cursor saves scanning the already-
+  // enriched prefix every run and makes resume a first-class contract,
+  // not a side-effect of the DB filter.
+  const resumeFromId = state.lastProcessedId;
+  const canResume = resumeFromId != null && !config.skip && !config.resetState;
+  if (canResume) {
+    console.log(`Resuming from id > ${resumeFromId} (${state.totalProcessed} previously processed)`);
+    console.log();
+  } else if (config.resetState) {
+    console.log("--reset-state passed: ignoring saved checkpoint");
+    console.log();
+    state.lastProcessedId = null;
+  }
   let fetchCursor = {
-    afterId: null,
+    afterId: canResume ? resumeFromId : null,
     offset: config.skip,
   };
 
@@ -706,6 +725,7 @@ function buildConfig(args, env) {
     dryRun: !!args.dryRun,
     apply: !!args.apply,
     retryFailed: !!args.retryFailed,
+    resetState: !!args.resetState,
     // Anthropic direct
     anthropicApiKey: env.ANTHROPIC_API_KEY || "",
     anthropicModel: args.model || env.ANTHROPIC_CLASSIFIER_MODEL || "claude-3-5-haiku-20241022",
@@ -733,6 +753,7 @@ function parseArgs(argv) {
     else if (a === "--provider" && argv[i + 1]) args.provider = argv[++i];
     else if (a === "--retry-failed") args.retryFailed = true;
     else if (a === "--max-calls" && argv[i + 1]) args.maxCalls = argv[++i];
+    else if (a === "--reset-state") args.resetState = true;
   }
   return args;
 }
@@ -770,6 +791,7 @@ Options:
   --retry-failed       Re-process previously failed thought IDs
   --max-calls <n>      Hard ceiling on LLM calls this run (default: 10000,
                        0 = unlimited). Abort cleanly once reached.
+  --reset-state        Ignore the saved checkpoint and start from id > 0
   --help               Show this help
 `);
 }
