@@ -194,5 +194,69 @@ REVOKE EXECUTE ON FUNCTION public.append_thought_evidence(bigint, jsonb) FROM pu
 GRANT EXECUTE ON FUNCTION public.append_thought_evidence(bigint, jsonb)
   TO service_role;
 
+-- ============================================================
+-- 5. ROW LEVEL SECURITY
+--    Belt-and-suspenders defence against anon/authenticated roles
+--    getting table-level privileges at the schema layer. service_role
+--    bypasses RLS automatically, so worker writes still succeed.
+--    authenticated users can read their own rows once user_id is
+--    populated (see section 2a). The user-scoped SELECT policies are
+--    only created when Supabase's auth.uid() exists; on non-Supabase
+--    Postgres, RLS is still enabled but no authenticated policy is
+--    created (deny-by-default for anyone except service_role).
+-- ============================================================
+
+ALTER TABLE public.ingestion_jobs  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ingestion_items ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if present so this file stays idempotent.
+DROP POLICY IF EXISTS ingestion_jobs_service_all  ON public.ingestion_jobs;
+DROP POLICY IF EXISTS ingestion_jobs_user_select  ON public.ingestion_jobs;
+DROP POLICY IF EXISTS ingestion_items_service_all ON public.ingestion_items;
+DROP POLICY IF EXISTS ingestion_items_user_select ON public.ingestion_items;
+
+CREATE POLICY ingestion_jobs_service_all
+  ON public.ingestion_jobs
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+CREATE POLICY ingestion_items_service_all
+  ON public.ingestion_items
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- Authenticated SELECT policies depend on auth.uid(); only create them
+-- on Supabase (where the auth schema ships the uid() function).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'auth' AND p.proname = 'uid'
+  ) THEN
+    EXECUTE $policy$
+      CREATE POLICY ingestion_jobs_user_select
+        ON public.ingestion_jobs
+        FOR SELECT
+        TO authenticated
+        USING (user_id IS NOT NULL AND user_id = auth.uid())
+    $policy$;
+
+    EXECUTE $policy$
+      CREATE POLICY ingestion_items_user_select
+        ON public.ingestion_items
+        FOR SELECT
+        TO authenticated
+        USING (user_id IS NOT NULL AND user_id = auth.uid())
+    $policy$;
+  END IF;
+END
+$$;
+
 -- Notify PostgREST to reload schema cache
 NOTIFY pgrst, 'reload schema';
