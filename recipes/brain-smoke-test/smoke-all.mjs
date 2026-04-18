@@ -43,6 +43,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -520,10 +521,51 @@ const authChecks = [
 
 // ---------------------------------------------------------------------------
 // Category 5: Core Feature Smoke (capture + search + cleanup)
+//
+// Destructive -- gated behind --destructive (alias --write). When the flag
+// is off this entire category is skipped without touching the database.
+// When the flag is on, an UUID-based tag plus a SIGINT/SIGTERM cleanup
+// hook guarantee that even a killed process does not leave rows behind.
 // ---------------------------------------------------------------------------
 
-const SMOKE_TAG = `ob1-smoke-${Date.now()}`;
+const SMOKE_TAG = `ob1-smoke-${randomUUID()}`;
 let createdSmokeId = null;
+let cleanupInstalled = false;
+let cleanupRan = false;
+
+async function deleteSmokeRows(reason = "cleanup") {
+  if (cleanupRan) return;
+  cleanupRan = true;
+  try {
+    const res = await fetch(
+      `${REST_BASE}/thoughts?metadata->>tag=eq.${encodeURIComponent(SMOKE_TAG)}`,
+      { method: "DELETE", headers: SVC_HEADERS },
+    );
+    if (!res.ok) {
+      process.stderr.write(
+        `WARN: ${reason} failed to delete smoke rows (HTTP ${res.status}). ` +
+        `Tag: ${SMOKE_TAG}\n`,
+      );
+    }
+  } catch (err) {
+    process.stderr.write(
+      `WARN: ${reason} threw while deleting smoke rows: ${String(err.message || err)}. ` +
+      `Tag: ${SMOKE_TAG}\n`,
+    );
+  }
+}
+
+function installDestructiveCleanupHooks() {
+  if (cleanupInstalled) return;
+  cleanupInstalled = true;
+  const handler = (sig) => {
+    // Fire cleanup, then exit. Don't await -- we're in a signal handler and
+    // Node will keep the event loop alive while the fetch is pending.
+    deleteSmokeRows(`${sig} handler`).finally(() => process.exit(130));
+  };
+  process.once("SIGINT", () => handler("SIGINT"));
+  process.once("SIGTERM", () => handler("SIGTERM"));
+}
 
 const coreChecks = [
   {
@@ -601,12 +643,11 @@ const coreChecks = [
   },
   {
     name: "Cleanup: delete test rows",
-    fn: async (s) => {
-      const res = await fetch(
-        `${REST_BASE}/thoughts?metadata->>tag=eq.${encodeURIComponent(SMOKE_TAG)}`,
-        { method: "DELETE", headers: SVC_HEADERS, signal: s },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    fn: async (_s) => {
+      // Delegate to deleteSmokeRows -- same function the SIGINT/SIGTERM
+      // handlers call, so the cleanup path is identical in the happy case
+      // and the interrupted case. cleanupRan dedupes both.
+      await deleteSmokeRows("normal cleanup");
       return "deleted";
     },
   },
@@ -748,6 +789,38 @@ async function main() {
   const results = [];
 
   for (const category of selected) {
+    // Core Features is gated behind --destructive because it INSERTs rows via
+    // the service-role key, which triggers the upsert_thought trigger chain
+    // (embedding + LLM metadata generation) and charges external model calls.
+    // Skip the whole category cleanly when the flag is off so CI can run this
+    // harness against shared/prod instances without mutating data or spending.
+    if (category.name === "Core Features" && !FLAG_DESTRUCTIVE) {
+      results.push({
+        category: category.name,
+        name: "Core Features (destructive)",
+        status: "skip",
+        message: "pass --destructive to exercise capture + search + cleanup (writes rows, spends LLM credits)",
+        details: null,
+        ms: 0,
+      });
+      continue;
+    }
+
+    if (category.name === "Core Features") {
+      // Wrap the whole category in try/finally so cleanup runs even if a check
+      // mid-way throws. The SIGINT/SIGTERM handlers cover ctrl-c / kill.
+      installDestructiveCleanupHooks();
+      try {
+        for (const check of category.checks) {
+          const outcome = await runCheck(check.fn);
+          results.push({ category: category.name, name: check.name, ...outcome });
+        }
+      } finally {
+        await deleteSmokeRows("finally cleanup");
+      }
+      continue;
+    }
+
     // Run checks within a category sequentially so shared state
     // (createdSmokeId) stays consistent.
     for (const check of category.checks) {
