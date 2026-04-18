@@ -1,0 +1,243 @@
+/**
+ * POST /synthesis — REST endpoint for Open Brain
+ *
+ * Paste this into your open-brain-rest Edge Function. The exported
+ * `handleCaptureSynthesis` is framework-agnostic — it takes a standard
+ * `Request` and returns a `Response`. Wire it up to whichever routing
+ * style your REST function uses.
+ *
+ * For a `fetch`-style Deno.serve router, add:
+ *
+ *     if (path === "/synthesis" && req.method === "POST") {
+ *       return await handleCaptureSynthesis(req);
+ *     }
+ *
+ * For a Hono-style router:
+ *
+ *     app.post("/synthesis", (c) => handleCaptureSynthesis(c.req.raw));
+ *
+ * What it does
+ * ------------
+ * Accepts a pre-computed synthesis string plus 3+ source thought IDs and
+ * stores the synthesis as a new `public.thoughts` row with
+ * `derivation_layer='derived'`, `derivation_method='synthesis'`, and
+ * `derived_from=[...sourceIds]`.
+ *
+ * It does NOT call an LLM — synthesis generation happens client-side. This
+ * endpoint only persists the result with provenance. That keeps the hot path
+ * cheap and deterministic, and keeps secret prompts off the server.
+ *
+ * Requirements
+ * ------------
+ * Provenance columns on `public.thoughts` (from the `provenance-chains`
+ * recipe schema):
+ *   - derivation_layer  (text: 'primary' | 'derived')
+ *   - derivation_method (text: 'synthesis')
+ *   - derived_from      (jsonb: array of parent thought IDs)
+ *
+ * Assumes in scope
+ * ----------------
+ *   - `supabase`              : Supabase service-role client
+ *   - `getEmbedding(text)`    : your embedding helper
+ *   - `extractMetadata(text)` : your metadata helper
+ *
+ * Safety rules
+ * ------------
+ *   1. `content` required (non-empty string).
+ *   2. `source_thought_ids` must contain at least 3 distinct positive ints.
+ *   3. Every source ID must exist in `public.thoughts`.
+ *   4. No source may have `source_type = 'synthesis'` (anti-loop).
+ *   5. At least one source must have `derivation_layer = 'primary'`.
+ */
+
+type SynthesisRequestBody = {
+  content?: unknown;
+  source_thought_ids?: unknown;
+  question?: unknown;
+  topics?: unknown;
+  tags?: unknown;
+  metadata?: unknown;
+};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export async function handleCaptureSynthesis(req: Request): Promise<Response> {
+  let body: SynthesisRequestBody;
+  try {
+    body = (await req.json()) as SynthesisRequestBody;
+  } catch {
+    return jsonResponse({ error: "Invalid JSON in request body" }, 400);
+  }
+
+  const content = typeof body.content === "string" ? body.content.trim() : "";
+  if (!content) {
+    return jsonResponse({ error: "content is required" }, 400);
+  }
+
+  // Accept either numeric BIGINT IDs or string UUIDs — OB1 installs vary.
+  // Stock schema in docs/01-getting-started.md uses UUID; enhanced / provenance
+  // variants may use BIGINT. We validate shape against whichever we see first.
+  const rawIds = Array.isArray(body.source_thought_ids)
+    ? body.source_thought_ids
+    : [];
+  const normalized = rawIds
+    .map((v) => {
+      if (typeof v === "number" && Number.isInteger(v) && v > 0) return v;
+      if (typeof v === "string" && v.trim() !== "") return v.trim();
+      return null;
+    })
+    .filter((v): v is number | string => v !== null);
+  const sourceIds = Array.from(new Set(normalized));
+  if (sourceIds.length < 3) {
+    return jsonResponse(
+      { error: "source_thought_ids must include at least 3 distinct IDs (positive integers or non-empty strings)" },
+      400,
+    );
+  }
+
+  // ── Safety check 1: all sources must exist ───────────────────────────────
+  const { data: parents, error: parentsError } = await supabase
+    .from("thoughts")
+    .select("id, derivation_layer, source_type")
+    .in("id", sourceIds);
+
+  if (parentsError) {
+    return jsonResponse(
+      { error: `parent lookup failed: ${parentsError.message}` },
+      500,
+    );
+  }
+
+  const parentRows = (parents ?? []) as Array<{
+    id: number | string;
+    derivation_layer: string | null;
+    source_type: string | null;
+  }>;
+  const foundIds = new Set(parentRows.map((p) => p.id));
+  const missing = sourceIds.filter((id) => !foundIds.has(id));
+  if (missing.length > 0) {
+    return jsonResponse(
+      { error: `parent thoughts not found: ${missing.join(", ")}` },
+      400,
+    );
+  }
+
+  // ── Safety check 2: reject synthesis-of-synthesis ────────────────────────
+  const synthSources = parentRows.filter((p) => p.source_type === "synthesis");
+  if (synthSources.length > 0) {
+    return jsonResponse(
+      {
+        error:
+          "source thoughts are themselves syntheses; synthesis-of-synthesis is forbidden",
+        synthesis_source_ids: synthSources.map((p) => p.id),
+      },
+      400,
+    );
+  }
+
+  // ── Safety check 3: at least one primary parent ──────────────────────────
+  const anyPrimary = parentRows.some((p) => p.derivation_layer === "primary");
+  if (!anyPrimary) {
+    return jsonResponse(
+      {
+        error:
+          "all source thoughts are derived; at least one must be primary (atomic) to prevent self-referential synthesis loops",
+      },
+      400,
+    );
+  }
+
+  // ── Build metadata, embedding, and persist ───────────────────────────────
+  let embedding: number[];
+  let autoMetadata: Record<string, unknown>;
+  try {
+    [embedding, autoMetadata] = await Promise.all([
+      getEmbedding(content),
+      extractMetadata(content),
+    ]);
+  } catch (err) {
+    return jsonResponse(
+      { error: `enrichment failed: ${(err as Error).message}` },
+      500,
+    );
+  }
+
+  const mergedMetadata: Record<string, unknown> = {
+    ...autoMetadata,
+    source: "rest_synthesis",
+  };
+  if (typeof body.question === "string") {
+    mergedMetadata.question = body.question;
+  }
+  if (Array.isArray(body.topics)) {
+    mergedMetadata.topics = body.topics;
+  }
+  if (Array.isArray(body.tags)) {
+    mergedMetadata.tags = body.tags;
+  }
+  if (body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)) {
+    Object.assign(mergedMetadata, body.metadata);
+  }
+
+  const { data: upsertResult, error: upsertError } = await supabase.rpc(
+    "upsert_thought",
+    {
+      p_content: content,
+      p_payload: {
+        source_type: "synthesis",
+        metadata: mergedMetadata,
+        derivation_layer: "derived",
+        derivation_method: "synthesis",
+        derived_from: sourceIds,
+      },
+    },
+  );
+
+  if (upsertError) {
+    return jsonResponse(
+      { error: `synthesis capture failed: ${upsertError.message}` },
+      500,
+    );
+  }
+
+  const thoughtId = (upsertResult as { id?: number | string } | null)?.id;
+  if (!thoughtId) {
+    return jsonResponse(
+      { error: "upsert_thought returned no thought ID" },
+      500,
+    );
+  }
+
+  const { error: embError } = await supabase
+    .from("thoughts")
+    .update({ embedding })
+    .eq("id", thoughtId);
+
+  if (embError) {
+    // Thought is safely written; the embedding is a soft-fail. Surface it so
+    // the caller can retry the embedding update, but keep the 200 success.
+    return jsonResponse(
+      {
+        thought_id: thoughtId,
+        source_count: sourceIds.length,
+        embedding_error: embError.message,
+        message: `Captured synthesis #${thoughtId} but embedding update failed`,
+      },
+      200,
+    );
+  }
+
+  return jsonResponse(
+    {
+      thought_id: thoughtId,
+      source_count: sourceIds.length,
+      message: `Captured synthesis #${thoughtId} from ${sourceIds.length} source thoughts`,
+    },
+    201,
+  );
+}
