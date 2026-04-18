@@ -105,7 +105,12 @@ const SUPABASE_URL = env("SUPABASE_URL").replace(/\/+$/, "");
 const SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY");
 const MCP_KEY = env("MCP_ACCESS_KEY");
 const REST_API_BASE = env("REST_API_BASE").replace(/\/+$/, "");
-const DASHBOARD_URL = env("NEXT_PUBLIC_API_URL").replace(/\/+$/, "");
+// NEXT_PUBLIC_API_URL is the open-brain-rest base URL (see
+// dashboards/open-brain-dashboard-next/README.md:41), not a dashboard /api.
+// Keep the legacy name for env parity with the dashboard, but treat it as a
+// REST base-URL probe, not a dashboard health probe.
+const REST_API_PUBLIC_URL = env("NEXT_PUBLIC_API_URL").replace(/\/+$/, "");
+const ANON_KEY = env("SUPABASE_ANON_KEY");
 
 if (!SUPABASE_URL || !SERVICE_KEY || !MCP_KEY) {
   const missing = [];
@@ -315,11 +320,24 @@ const restChecks = [
     },
   },
   {
-    name: "Dashboard health (NEXT_PUBLIC_API_URL)",
+    // NEXT_PUBLIC_API_URL is the open-brain-rest base URL that the dashboard
+    // is pointed at. Hitting /health on it proves the public env var the
+    // dashboard uses actually resolves to a healthy REST gateway. Anything
+    // outside 2xx is a fail so 401/500 can't masquerade as pass.
+    name: "REST API base URL (NEXT_PUBLIC_API_URL) responds 2xx",
     fn: async (s) => {
-      if (!DASHBOARD_URL) throw new SkipError("NEXT_PUBLIC_API_URL unset");
-      const res = await fetch(`${DASHBOARD_URL}/health`, { signal: s });
-      return `HTTP ${res.status}`;
+      if (!REST_API_PUBLIC_URL) throw new SkipError("NEXT_PUBLIC_API_URL unset");
+      const res = await fetch(`${REST_API_PUBLIC_URL}/health`, {
+        headers: MCP_HEADERS,
+        signal: s,
+      });
+      if (res.status >= 200 && res.status < 300) return `HTTP ${res.status}`;
+      // 401 here means "URL resolves and the gateway is up, but our key was
+      // not accepted". Surface it explicitly rather than silently passing.
+      if (res.status === 401) {
+        throw new Error(`HTTP 401 (base URL reachable, MCP_ACCESS_KEY rejected)`);
+      }
+      throw new Error(`HTTP ${res.status}`);
     },
   },
 ];
