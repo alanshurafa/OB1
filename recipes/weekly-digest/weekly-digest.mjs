@@ -20,13 +20,15 @@
  *   node weekly-digest.mjs --dry-run               # synthesize + print, no delivery (implies --output=stdout)
  *
  * Env vars:
- *   OPEN_BRAIN_URL           Your Supabase project URL (required)
- *   OPEN_BRAIN_SERVICE_KEY   Supabase service role key (required)
- *   ANTHROPIC_API_KEY        Direct Anthropic key (preferred)
- *   OPENROUTER_API_KEY       OpenRouter fallback (used if ANTHROPIC_API_KEY unset)
- *   TELEGRAM_BOT_TOKEN       Required for --output=telegram
- *   TELEGRAM_CHAT_ID         Required for --output=telegram
- *   DIGEST_MODEL             Override default model (default: claude-opus-4-7)
+ *   SUPABASE_URL              Your Supabase project URL (required; canonical)
+ *   SUPABASE_SERVICE_ROLE_KEY Supabase service role key (required; canonical)
+ *   OPEN_BRAIN_URL            Legacy alias for SUPABASE_URL (deprecated)
+ *   OPEN_BRAIN_SERVICE_KEY    Legacy alias for SUPABASE_SERVICE_ROLE_KEY (deprecated)
+ *   ANTHROPIC_API_KEY         Direct Anthropic key (preferred)
+ *   OPENROUTER_API_KEY        OpenRouter fallback (used if ANTHROPIC_API_KEY unset)
+ *   TELEGRAM_BOT_TOKEN        Required for --output=telegram
+ *   TELEGRAM_CHAT_ID          Required for --output=telegram
+ *   DIGEST_MODEL              Override default model (default: claude-opus-4-7)
  */
 
 import fs from "node:fs";
@@ -145,10 +147,38 @@ function printHelp() {
 // ── Env validation ──────────────────────────────────────────────────────────
 
 function loadConfig(args) {
-  const openBrainUrl = process.env.OPEN_BRAIN_URL;
-  const openBrainKey = process.env.OPEN_BRAIN_SERVICE_KEY;
-  if (!openBrainUrl) throw new Error("Missing OPEN_BRAIN_URL env var");
-  if (!openBrainKey) throw new Error("Missing OPEN_BRAIN_SERVICE_KEY env var");
+  // Canonical env vars match the rest of the repo's recipes
+  // (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY). OPEN_BRAIN_* is accepted as
+  // a legacy alias so existing setups keep working; a one-time deprecation
+  // warning nudges users toward the shared `.env.local` pattern.
+  const supabaseUrlPrimary = process.env.SUPABASE_URL;
+  const supabaseKeyPrimary = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const legacyUrl = process.env.OPEN_BRAIN_URL;
+  const legacyKey = process.env.OPEN_BRAIN_SERVICE_KEY;
+  const openBrainUrl = supabaseUrlPrimary || legacyUrl;
+  const openBrainKey = supabaseKeyPrimary || legacyKey;
+  if (!openBrainUrl) {
+    throw new Error(
+      "Missing SUPABASE_URL env var (legacy alias: OPEN_BRAIN_URL)",
+    );
+  }
+  if (!openBrainKey) {
+    throw new Error(
+      "Missing SUPABASE_SERVICE_ROLE_KEY env var (legacy alias: OPEN_BRAIN_SERVICE_KEY)",
+    );
+  }
+  if (!supabaseUrlPrimary && legacyUrl) {
+    console.warn(
+      "[weekly-digest] DEPRECATION: OPEN_BRAIN_URL is a legacy alias. " +
+        "Set SUPABASE_URL instead to share one .env.local across recipes.",
+    );
+  }
+  if (!supabaseKeyPrimary && legacyKey) {
+    console.warn(
+      "[weekly-digest] DEPRECATION: OPEN_BRAIN_SERVICE_KEY is a legacy alias. " +
+        "Set SUPABASE_SERVICE_ROLE_KEY instead to share one .env.local across recipes.",
+    );
+  }
 
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;

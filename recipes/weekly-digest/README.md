@@ -35,9 +35,9 @@ Copy this block into a text editor and fill it in as you go.
 WEEKLY DIGEST -- CREDENTIAL TRACKER
 --------------------------------------
 
-FROM YOUR OPEN BRAIN SETUP
-  Open Brain URL:              ____________   (your-project-ref.supabase.co)
-  Open Brain service key:      ____________
+FROM YOUR OPEN BRAIN (SUPABASE) SETUP
+  SUPABASE_URL:                ____________   (your-project-ref.supabase.co)
+  SUPABASE_SERVICE_ROLE_KEY:   ____________
 
 LLM (pick one)
   Anthropic API key:           ____________
@@ -56,12 +56,14 @@ TELEGRAM DELIVERY (optional)
 2. Export the required env vars for your shell, a `.env.local` file, or your scheduler's secret store. The script does not load `.env` files directly — keep it simple and let your runner (cron, systemd, GitHub Actions, `dotenv-cli`) handle that.
 
 ```bash
-export OPEN_BRAIN_URL="https://your-project-ref.supabase.co"
-export OPEN_BRAIN_SERVICE_KEY="your-service-role-key"
+export SUPABASE_URL="https://your-project-ref.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
 export ANTHROPIC_API_KEY="sk-ant-..."          # or OPENROUTER_API_KEY
 export TELEGRAM_BOT_TOKEN="123456:..."         # optional
 export TELEGRAM_CHAT_ID="987654321"            # optional
 ```
+
+> `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` match the rest of the `recipes/` tree so you can share a single `.env.local` across recipes. `OPEN_BRAIN_URL` and `OPEN_BRAIN_SERVICE_KEY` are accepted as legacy aliases for back-compat but emit a one-time deprecation warning.
 
 3. Smoke test it with `--dry-run` first so nothing ships anywhere:
 
@@ -176,8 +178,8 @@ jobs:
           node-version: "20"
       - name: Run digest
         env:
-          OPEN_BRAIN_URL: ${{ secrets.OPEN_BRAIN_URL }}
-          OPEN_BRAIN_SERVICE_KEY: ${{ secrets.OPEN_BRAIN_SERVICE_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -233,14 +235,14 @@ With `--output=telegram`, the digest arrives as one (or two, if long) messages i
 
 ## Troubleshooting
 
-**Issue: `Missing OPEN_BRAIN_URL env var`**
-Solution: Export `OPEN_BRAIN_URL` and `OPEN_BRAIN_SERVICE_KEY` before running. The script does not auto-load `.env` files — wrap the call in `dotenv-cli` (`npx dotenv -e .env.local -- node weekly-digest.mjs`) or let your scheduler inject the env.
+**Issue: `Missing SUPABASE_URL env var`**
+Solution: Export `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` before running. (`OPEN_BRAIN_URL` / `OPEN_BRAIN_SERVICE_KEY` also work as legacy aliases but print a deprecation warning.) The script does not auto-load `.env` files — wrap the call in `dotenv-cli` (`npx dotenv -e .env.local -- node weekly-digest.mjs`) or let your scheduler inject the env.
 
 **Issue: `sensitivity_tier column not found — falling back to unfiltered query`**
 Solution: Your Open Brain install doesn't have the sensitivity-tiers primitive yet. The script still works, but restricted/personal thoughts will be included in the pool. Install the primitive to enable filtering, or audit the output carefully if you're posting publicly.
 
 **Issue: `thoughts fetch failed: 401`**
-Solution: `OPEN_BRAIN_SERVICE_KEY` is wrong or expired. This must be the **service_role** key (not the anon key), because the recipe needs to read rows regardless of RLS policies. Double-check in Supabase → Project Settings → API.
+Solution: `SUPABASE_SERVICE_ROLE_KEY` is wrong or expired. This must be the **service_role** key (not the anon key), because the recipe needs to read rows regardless of RLS policies. Double-check in Supabase → Project Settings → API.
 
 **Issue: `Telegram sendMessage failed: 400 chat not found`**
 Solution: `TELEGRAM_CHAT_ID` is wrong, or you haven't messaged the bot yet. Send any message to your bot, then check `https://api.telegram.org/bot<TOKEN>/getUpdates` — the numeric `chat.id` is what you want.
