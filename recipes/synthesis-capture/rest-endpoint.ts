@@ -169,6 +169,103 @@ export async function handleCaptureSynthesis(req: Request): Promise<Response> {
     );
   }
 
+  // ── Input caps on optional fields (parity with README + MCP) ─────────────
+  // Each cap returns 413 Payload Too Large with a field-specific error so
+  // callers can fix the offending field without guessing. Caps match the MCP
+  // Zod schema so both surfaces reject identical payloads — adjust both
+  // handlers together if you need higher bounds.
+  let questionValue: string | null = null;
+  if (body.question !== undefined && body.question !== null) {
+    if (typeof body.question !== "string") {
+      return jsonResponse({ error: "question must be a string" }, 400);
+    }
+    const trimmedQuestion = body.question.trim();
+    if (trimmedQuestion.length > 2_000) {
+      return jsonResponse(
+        { error: "question exceeds 2000 character limit" },
+        413,
+      );
+    }
+    if (trimmedQuestion !== "") questionValue = trimmedQuestion;
+  }
+
+  let topicsValue: string[] | null = null;
+  if (body.topics !== undefined && body.topics !== null) {
+    if (!Array.isArray(body.topics)) {
+      return jsonResponse({ error: "topics must be an array" }, 400);
+    }
+    if (body.topics.length > 20) {
+      return jsonResponse(
+        { error: "topics exceeds 20 item limit" },
+        413,
+      );
+    }
+    for (const t of body.topics) {
+      if (typeof t !== "string") {
+        return jsonResponse(
+          { error: "topics entries must be strings" },
+          400,
+        );
+      }
+      if (t.length > 100) {
+        return jsonResponse(
+          { error: "topics entry exceeds 100 character limit" },
+          413,
+        );
+      }
+    }
+    topicsValue = body.topics as string[];
+  }
+
+  let tagsValue: string[] | null = null;
+  if (body.tags !== undefined && body.tags !== null) {
+    if (!Array.isArray(body.tags)) {
+      return jsonResponse({ error: "tags must be an array" }, 400);
+    }
+    if (body.tags.length > 20) {
+      return jsonResponse(
+        { error: "tags exceeds 20 item limit" },
+        413,
+      );
+    }
+    for (const t of body.tags) {
+      if (typeof t !== "string") {
+        return jsonResponse(
+          { error: "tags entries must be strings" },
+          400,
+        );
+      }
+      if (t.length > 50) {
+        return jsonResponse(
+          { error: "tags entry exceeds 50 character limit" },
+          413,
+        );
+      }
+    }
+    tagsValue = body.tags as string[];
+  }
+
+  let callerMetadata: Record<string, unknown> | null = null;
+  if (body.metadata !== undefined && body.metadata !== null) {
+    if (
+      typeof body.metadata !== "object" ||
+      Array.isArray(body.metadata)
+    ) {
+      return jsonResponse(
+        { error: "metadata must be a plain object" },
+        400,
+      );
+    }
+    const keyCount = Object.keys(body.metadata as Record<string, unknown>).length;
+    if (keyCount > 50) {
+      return jsonResponse(
+        { error: "metadata exceeds 50 key limit" },
+        413,
+      );
+    }
+    callerMetadata = body.metadata as Record<string, unknown>;
+  }
+
   // ── Build metadata, embedding, and persist ───────────────────────────────
   let embedding: number[];
   let autoMetadata: Record<string, unknown>;
@@ -193,17 +290,17 @@ export async function handleCaptureSynthesis(req: Request): Promise<Response> {
   const mergedMetadata: Record<string, unknown> = {
     ...autoMetadata,
   };
-  if (body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)) {
-    Object.assign(mergedMetadata, body.metadata);
+  if (callerMetadata) {
+    Object.assign(mergedMetadata, callerMetadata);
   }
-  if (typeof body.question === "string" && body.question.trim() !== "") {
-    mergedMetadata.question = body.question.trim();
+  if (questionValue) {
+    mergedMetadata.question = questionValue;
   }
-  if (Array.isArray(body.topics)) {
-    mergedMetadata.topics = body.topics;
+  if (topicsValue) {
+    mergedMetadata.topics = topicsValue;
   }
-  if (Array.isArray(body.tags)) {
-    mergedMetadata.tags = body.tags;
+  if (tagsValue) {
+    mergedMetadata.tags = tagsValue;
   }
   // Reserved keys — stamped LAST so body.metadata cannot overwrite them.
   // These identify the write channel and provenance layer for downstream
@@ -224,6 +321,19 @@ export async function handleCaptureSynthesis(req: Request): Promise<Response> {
     derivation_method: "synthesis",
     derived_from: sourceIds,
   };
+
+  // Final size guard on the fully-merged metadata object. We check AFTER
+  // merge (including provenance stamping) so callers cannot bypass the cap
+  // by shrinking individual fields while still pushing the aggregate past
+  // 10KB. 10KB comfortably holds tens of topics/tags plus provenance while
+  // keeping the jsonb payload small enough that the RPC write stays cheap.
+  const mergedSize = JSON.stringify(mergedMetadata).length;
+  if (mergedSize > 10_240) {
+    return jsonResponse(
+      { error: `metadata exceeds 10KB limit (got ${mergedSize} bytes after merge)` },
+      413,
+    );
+  }
 
   const { data: upsertResult, error: upsertError } = await supabase.rpc(
     "upsert_thought",

@@ -74,8 +74,10 @@ server.registerTool(
         .max(2_000, "question must be 2000 chars or less")
         .optional()
         .describe("Optional: the original question that prompted the synthesis."),
-      topics: z.array(z.string().max(200)).max(20).optional(),
-      tags: z.array(z.string().max(200)).max(20).optional(),
+      // Per-item caps match the REST path so both surfaces reject identical
+      // payloads. Adjust both handlers together if you need higher bounds.
+      topics: z.array(z.string().max(100, "topics entry exceeds 100 character limit")).max(20, "topics exceeds 20 item limit").optional(),
+      tags: z.array(z.string().max(50, "tags entry exceeds 50 character limit")).max(20, "tags exceeds 20 item limit").optional(),
     },
   },
   async ({ content, source_thought_ids, question, topics, tags }) => {
@@ -211,6 +213,23 @@ server.registerTool(
         derivation_method: "synthesis",
         derived_from: sourceIds,
       };
+
+      // Final size guard on the fully-merged metadata object, mirroring
+      // the REST path so both surfaces reject identical over-sized payloads.
+      // Checked AFTER merge (including provenance stamping) so callers cannot
+      // bypass the cap by shrinking individual fields.
+      const mergedSize = JSON.stringify(mergedMetadata).length;
+      if (mergedSize > 10_240) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: metadata exceeds 10KB limit (got ${mergedSize} bytes after merge)`,
+            },
+          ],
+          isError: true,
+        };
+      }
 
       const { data: upsertResult, error: upsertError } = await supabase.rpc(
         "upsert_thought",
