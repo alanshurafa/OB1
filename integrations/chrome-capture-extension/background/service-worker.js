@@ -250,77 +250,86 @@ async function processCaptureRequest(message) {
     sessionMetrics.skipped += 1;
     return { ok: true, status: 'duplicate_fingerprint', fingerprint };
   }
-  processingFingerprints.add(fingerprint);
 
-  const payload = {
-    text: capture.text,
-    source_label: capture.sourceLabel,
-    source_type: capture.sourceType,
-    auto_execute: capture.autoExecute,
-    source_metadata: {
-      ...capture.sourceMetadata,
-      extension_capture_mode: capture.captureMode,
-      extension_platform: capture.platform,
-      content_fingerprint: fingerprint
-    }
-  };
-
+  // Important: the add() and all mutation that follows lives inside the
+  // try block so the finally guarantees cleanup. If an exception were to
+  // fire between add() and the ingest call, the old code would leak the
+  // fingerprint into processingFingerprints forever and hasKnownFingerprint
+  // would silently suppress any future capture of the same content.
+  let payload;
   try {
-    const result = await OBApiClient.ingestDocument(payload, {
-      apiKey: config.apiKey,
-      endpoint: config.apiEndpoint
-    });
+    processingFingerprints.add(fingerprint);
 
-    await rememberFingerprint(fingerprint);
-    await appendCaptureLog({
-      timestamp: new Date().toISOString(),
-      platform: capture.platform || 'unknown',
-      status: result && result.status ? result.status : 'captured',
-      preview: capture.preview,
-      detail: result && result.message ? result.message : '',
-      fingerprint: fingerprint.slice(0, 16)
-    });
+    payload = {
+      text: capture.text,
+      source_label: capture.sourceLabel,
+      source_type: capture.sourceType,
+      auto_execute: capture.autoExecute,
+      source_metadata: {
+        ...capture.sourceMetadata,
+        extension_capture_mode: capture.captureMode,
+        extension_platform: capture.platform,
+        content_fingerprint: fingerprint
+      }
+    };
 
-    if (result && result.status === 'existing') {
-      sessionMetrics.skipped += 1;
-    } else {
-      sessionMetrics.sent += 1;
+    try {
+      const result = await OBApiClient.ingestDocument(payload, {
+        apiKey: config.apiKey,
+        endpoint: config.apiEndpoint
+      });
+
+      await rememberFingerprint(fingerprint);
+      await appendCaptureLog({
+        timestamp: new Date().toISOString(),
+        platform: capture.platform || 'unknown',
+        status: result && result.status ? result.status : 'captured',
+        preview: capture.preview,
+        detail: result && result.message ? result.message : '',
+        fingerprint: fingerprint.slice(0, 16)
+      });
+
+      if (result && result.status === 'existing') {
+        sessionMetrics.skipped += 1;
+      } else {
+        sessionMetrics.sent += 1;
+      }
+      sessionMetrics.lastError = '';
+      await refreshBadge();
+
+      return {
+        ok: true,
+        status: result && result.status ? result.status : 'captured',
+        result,
+        fingerprint
+      };
+    } catch (error) {
+      const retryItem = {
+        platform: capture.platform || 'unknown',
+        preview: capture.preview,
+        payload,
+        fingerprint,
+        attempts: 0,
+        queuedAt: new Date().toISOString()
+      };
+
+      await queueRetry(retryItem, error.message);
+      await appendCaptureLog({
+        timestamp: new Date().toISOString(),
+        platform: capture.platform || 'unknown',
+        status: 'queued_retry',
+        preview: capture.preview,
+        detail: error.message,
+        fingerprint: fingerprint.slice(0, 16)
+      });
+
+      return {
+        ok: false,
+        status: 'queued_retry',
+        error: error.message,
+        fingerprint
+      };
     }
-    sessionMetrics.lastError = '';
-    await refreshBadge();
-
-    return {
-      ok: true,
-      status: result && result.status ? result.status : 'captured',
-      result,
-      fingerprint
-    };
-  } catch (error) {
-    const retryItem = {
-      platform: capture.platform || 'unknown',
-      preview: capture.preview,
-      payload,
-      fingerprint,
-      attempts: 0,
-      queuedAt: new Date().toISOString()
-    };
-
-    await queueRetry(retryItem, error.message);
-    await appendCaptureLog({
-      timestamp: new Date().toISOString(),
-      platform: capture.platform || 'unknown',
-      status: 'queued_retry',
-      preview: capture.preview,
-      detail: error.message,
-      fingerprint: fingerprint.slice(0, 16)
-    });
-
-    return {
-      ok: false,
-      status: 'queued_retry',
-      error: error.message,
-      fingerprint
-    };
   } finally {
     processingFingerprints.delete(fingerprint);
   }
