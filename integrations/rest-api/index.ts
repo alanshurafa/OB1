@@ -517,8 +517,24 @@ async function handleUpdateThought(id: string, req: Request): Promise<Response> 
   const content = String(body.content ?? "").trim();
   if (!content) return json({ error: "content is required" }, 400);
 
-  const { data: existing, error: fetchErr } = await supabase.from("thoughts").select("id").eq("id", id).single();
+  const { data: existing, error: fetchErr } = await supabase
+    .from("thoughts")
+    .select("id, sensitivity_tier, metadata")
+    .eq("id", id)
+    .single();
   if (fetchErr || !existing) return json({ error: `Thought #${id} not found` }, 404);
+
+  // Re-detect sensitivity on the new content. Use escalation-only
+  // semantics (resolveSensitivityTier) so a standard->personal change
+  // bumps the tier automatically, while personal->standard can only
+  // happen if the caller explicitly requests force_sensitivity — and
+  // even then we refuse to downgrade to below what detection returned.
+  const detected = detectSensitivity(content);
+  const existingTier = asString(existing.sensitivity_tier, "standard") as typeof SENSITIVITY_TIERS[number];
+  const force = body.force_sensitivity === true;
+  const resolvedTier = force
+    ? resolveSensitivityTier(detected.tier)
+    : resolveSensitivityTier(detected.tier, existingTier);
 
   let embedding = null;
   try { embedding = await embedText(content); } catch { /* continue */ }
@@ -530,10 +546,25 @@ async function handleUpdateThought(id: string, req: Request): Promise<Response> 
     const rawImp = Number(body.importance);
     updates.importance = Math.min(Math.max(Number.isFinite(rawImp) ? rawImp : 3, 0), 6);
   }
+  if (resolvedTier !== existingTier) {
+    updates.sensitivity_tier = resolvedTier;
+    const existingMeta = isRecord(existing.metadata) ? { ...existing.metadata as Record<string, unknown> } : {};
+    existingMeta.sensitivity_reasons = detected.reasons;
+    updates.metadata = existingMeta;
+  }
 
   const { error: updateErr } = await supabase.from("thoughts").update(updates).eq("id", id);
   if (updateErr) throw new Error(`update failed: ${updateErr.message}`);
-  return json({ id, action: "updated", message: `Thought #${id} updated` });
+  const tierChanged = resolvedTier !== existingTier;
+  return json({
+    id,
+    action: "updated",
+    sensitivity_tier: resolvedTier,
+    sensitivity_tier_changed: tierChanged,
+    message: tierChanged
+      ? `Thought #${id} updated (sensitivity ${existingTier} -> ${resolvedTier})`
+      : `Thought #${id} updated`,
+  });
 }
 
 async function handleDeleteThought(id: string): Promise<Response> {
