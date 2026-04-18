@@ -2,9 +2,10 @@
 /**
  * smoke-all.mjs -- Full-surface smoke test for an Open Brain install.
  *
- * 30 independent checks across six categories: MCP endpoint, REST API gateway,
- * database schema, access-key auth, core capture/search features, and RLS
- * safety rails. Verifies that a freshly-built Open Brain is wired correctly.
+ * ~30 independent checks across six categories: MCP endpoint, REST API
+ * gateway, database schema, access-key enforcement, core capture/search
+ * features, and row-level security. Verifies that a freshly-built Open
+ * Brain is wired correctly.
  *
  * Stock Open Brain (docs/01-getting-started.md) needs only the canonical
  * thoughts table, open-brain-mcp Edge Function, and MCP_ACCESS_KEY. Optional
@@ -13,27 +14,38 @@
  * the run.
  *
  * Usage:
- *   node smoke-all.mjs                       # pretty-print dashboard
+ *   node smoke-all.mjs                       # pretty-print dashboard (read-only)
  *   node smoke-all.mjs --json                # machine-readable JSON
+ *   node smoke-all.mjs --destructive         # also run Core Features (writes + LLM calls)
  *   node smoke-all.mjs --category=DB\ Schema # run only one category
  *   node smoke-all.mjs --help                # show this usage
  *
- * Required env (in .env.local or exported):
+ * By default, Core Features is SKIPPED because it inserts rows via the
+ * service-role key and triggers embedding/LLM metadata generation. Pass
+ * --destructive (alias: --write) when you want to exercise those paths.
+ *
+ * Required env (in .env.local next to the script, or exported):
  *   SUPABASE_URL               https://<ref>.supabase.co
  *   SUPABASE_SERVICE_ROLE_KEY  service-role secret key
  *   MCP_ACCESS_KEY             the key you set via `supabase secrets set`
  *
  * Optional env (unlock extra checks):
  *   REST_API_BASE              e.g. https://<ref>.supabase.co/functions/v1/open-brain-rest
- *   NEXT_PUBLIC_API_URL        dashboard API base (optional, skipped if unset)
+ *   NEXT_PUBLIC_API_URL        open-brain-rest base URL used by the dashboard
+ *   SUPABASE_ANON_KEY          anon/publishable key; enables a real RLS probe
  *
  * Exit codes:
  *   0  all pass, or all pass-or-skip
  *   1  at least one check failed
+ *   2  setup error (missing required env var, unknown --category, etc.)
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -42,13 +54,14 @@ import path from "node:path";
 const args = process.argv.slice(2);
 const FLAG_JSON = args.includes("--json");
 const FLAG_HELP = args.includes("--help") || args.includes("-h");
+const FLAG_DESTRUCTIVE = args.includes("--destructive") || args.includes("--write");
 const categoryArg = args.find((a) => a.startsWith("--category="));
 const CATEGORY_FILTER = categoryArg ? categoryArg.slice("--category=".length) : null;
 
 if (FLAG_HELP) {
   const lines = fs.readFileSync(new URL(import.meta.url), "utf8")
     .split(/\r?\n/)
-    .slice(1, 35)
+    .slice(1, 45)
     .map((l) => l.replace(/^ ?\*\/?/, "").replace(/^ \* ?/, ""))
     .filter((l) => !l.startsWith("/**"))
     .join("\n");
@@ -60,20 +73,29 @@ if (FLAG_HELP) {
 // Env loading
 // ---------------------------------------------------------------------------
 
-function loadEnvFile() {
-  const envPath = path.join(process.cwd(), ".env.local");
+function parseEnvFile(envPath) {
   const vars = {};
-  if (fs.existsSync(envPath)) {
-    for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq > 0) {
-        vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1).replace(/^["']|["']$/g, "");
-      }
+  if (!fs.existsSync(envPath)) return vars;
+  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq > 0) {
+      vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1).replace(/^["']|["']$/g, "");
     }
   }
   return vars;
+}
+
+function loadEnvFile() {
+  // Primary: .env.local next to the script (survives `node path/to/smoke-all.mjs`
+  // from any cwd). Fallback: .env.local in cwd if the script-dir copy is absent.
+  const scriptDirEnv = path.join(__dirname, ".env.local");
+  const cwdEnv = path.join(process.cwd(), ".env.local");
+  const primary = parseEnvFile(scriptDirEnv);
+  if (Object.keys(primary).length > 0) return primary;
+  if (scriptDirEnv !== cwdEnv) return parseEnvFile(cwdEnv);
+  return primary;
 }
 
 const envFile = loadEnvFile();
