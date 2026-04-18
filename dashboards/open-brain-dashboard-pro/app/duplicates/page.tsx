@@ -24,37 +24,44 @@ export default function DuplicatesPage() {
     pair: DuplicatePair;
   } | null>(null);
 
-  // Batch selection state: pairKey -> which side to keep
-  const [selections, setSelections] = useState<Record<string, Selection>>({});
+  // Batch selection state: pairKey -> { pair data, which side to keep }.
+  // REVIEW-CODEX-3 P2#1: Store full pair DATA (not just IDs) so selections
+  // survive page navigation. Without this, selecting pairs on page 1 then
+  // navigating to page 2 silently drops them because processBatch can only
+  // resolve pairs present in the current page's `pairs` array.
+  const [selections, setSelections] = useState<
+    Map<string, { pair: DuplicatePair; action: Selection }>
+  >(new Map());
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [confirmBatch, setConfirmBatch] = useState(false);
 
-  const toggleSelection = (key: string, action: Selection) => {
+  const toggleSelection = (pair: DuplicatePair, action: Selection) => {
+    const key = pairKey(pair);
     setSelections((prev) => {
-      if (prev[key] === action) {
+      const next = new Map(prev);
+      const existing = next.get(key);
+      if (existing && existing.action === action) {
         // Deselect if clicking the same side
-        const next = { ...prev };
-        delete next[key];
-        return next;
+        next.delete(key);
+      } else {
+        next.set(key, { pair, action });
       }
-      return { ...prev, [key]: action };
+      return next;
     });
   };
 
-  const clearSelections = () => setSelections({});
+  const clearSelections = () => setSelections(new Map());
 
-  const selectedCount = Object.keys(selections).length;
+  const selectedCount = selections.size;
 
   const processBatch = async () => {
     setBatchProcessing(true);
     setError(null);
-    const entries = Object.entries(selections);
+    const entries = Array.from(selections.entries());
     const removedKeys: string[] = [];
     const failedKeys: string[] = [];
 
-    for (const [key, action] of entries) {
-      const pair = pairs.find((p) => pairKey(p) === key);
-      if (!pair) continue;
+    for (const [key, { pair, action }] of entries) {
       try {
         const res = await fetch("/api/duplicates/resolve", {
           method: "POST",
@@ -73,11 +80,11 @@ export default function DuplicatesPage() {
       }
     }
 
-    // Remove resolved pairs from state
+    // Remove resolved pairs from current-page state and from selections
     setPairs((prev) => prev.filter((p) => !removedKeys.includes(pairKey(p))));
     setSelections((prev) => {
-      const next = { ...prev };
-      for (const k of removedKeys) delete next[k];
+      const next = new Map(prev);
+      for (const k of removedKeys) next.delete(k);
       return next;
     });
     setBatchProcessing(false);
@@ -201,32 +208,46 @@ export default function DuplicatesPage() {
 
       {/* Batch action toolbar */}
       {selectedCount > 0 && (() => {
-        const deleteCount = Object.values(selections).filter(s => s === "keep_a" || s === "keep_b").length;
-        const keepBothCount = Object.values(selections).filter(s => s === "keep_both").length;
+        const actions = Array.from(selections.values()).map((s) => s.action);
+        const deleteCount = actions.filter((a) => a === "keep_a" || a === "keep_b").length;
+        const keepBothCount = actions.filter((a) => a === "keep_both").length;
+        // REVIEW-CODEX-3 P2#1: How many of the currently-selected pairs are
+        // NOT on this page — surfaces cross-page selections to the user.
+        const currentPageKeys = new Set(pairs.map(pairKey));
+        const offPageCount = Array.from(selections.keys()).filter(
+          (k) => !currentPageKeys.has(k)
+        ).length;
         return (
-          <div className="flex items-center gap-3 bg-violet-surface border border-violet/20 rounded-lg px-4 py-3">
-            <span className="text-sm text-violet font-medium">
-              {selectedCount} pair{selectedCount > 1 ? "s" : ""} selected
-              {deleteCount > 0 && keepBothCount > 0 && (
-                <span className="text-text-muted font-normal">
-                  {" "}({deleteCount} to delete, {keepBothCount} to dismiss)
-                </span>
-              )}
-            </span>
-            <button
-              disabled={batchProcessing}
-              onClick={() => setConfirmBatch(true)}
-              className="px-4 py-1.5 text-sm font-medium bg-violet hover:bg-violet-dim text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              {batchProcessing ? "Processing..." : `Resolve ${selectedCount} pair${selectedCount > 1 ? "s" : ""}`}
-            </button>
-            <button
-              disabled={batchProcessing}
-              onClick={clearSelections}
-              className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
-            >
-              Clear
-            </button>
+          <div className="flex flex-col gap-2 bg-violet-surface border border-violet/20 rounded-lg px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-violet font-medium">
+                {selectedCount} pair{selectedCount > 1 ? "s" : ""} selected
+                {deleteCount > 0 && keepBothCount > 0 && (
+                  <span className="text-text-muted font-normal">
+                    {" "}({deleteCount} to delete, {keepBothCount} to dismiss)
+                  </span>
+                )}
+              </span>
+              <button
+                disabled={batchProcessing}
+                onClick={() => setConfirmBatch(true)}
+                className="px-4 py-1.5 text-sm font-medium bg-violet hover:bg-violet-dim text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                {batchProcessing ? "Processing..." : `Resolve ${selectedCount} pair${selectedCount > 1 ? "s" : ""}`}
+              </button>
+              <button
+                disabled={batchProcessing}
+                onClick={clearSelections}
+                className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+            {offPageCount > 0 && (
+              <p className="text-xs text-text-muted">
+                {offPageCount} selection{offPageCount > 1 ? "s" : ""} from other page{offPageCount > 1 ? "s" : ""} — selections persist across pagination.
+              </p>
+            )}
           </div>
         );
       })()}
@@ -258,7 +279,7 @@ export default function DuplicatesPage() {
                 <div className="flex items-center gap-3">
                   <label
                     className={`flex items-center gap-1.5 cursor-pointer px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
-                      selections[key] === "keep_both"
+                      selections.get(key)?.action === "keep_both"
                         ? "text-violet border-violet/30 bg-violet-surface"
                         : "text-text-muted border-border hover:bg-bg-hover"
                     }`}
@@ -266,8 +287,8 @@ export default function DuplicatesPage() {
                     <input
                       type="radio"
                       name={`pair-${key}`}
-                      checked={selections[key] === "keep_both"}
-                      onChange={() => toggleSelection(key, "keep_both")}
+                      checked={selections.get(key)?.action === "keep_both"}
+                      onChange={() => toggleSelection(pair, "keep_both")}
                       className="accent-violet"
                     />
                     Keep Both
@@ -280,21 +301,21 @@ export default function DuplicatesPage() {
                 {/* Left: Thought A */}
                 <div
                   className={`bg-bg-elevated rounded-lg p-3 space-y-2 cursor-pointer border-2 transition-colors ${
-                    selections[key] === "keep_a"
+                    selections.get(key)?.action === "keep_a"
                       ? "border-emerald-500/50 bg-emerald-500/5"
-                      : selections[key] === "keep_b"
+                      : selections.get(key)?.action === "keep_b"
                         ? "border-red-500/30 bg-red-500/5"
                         : "border-transparent"
                   }`}
-                  onClick={() => toggleSelection(key, "keep_a")}
+                  onClick={() => toggleSelection(pair, "keep_a")}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <input
                         type="radio"
                         name={`pair-${key}`}
-                        checked={selections[key] === "keep_a"}
-                        onChange={() => toggleSelection(key, "keep_a")}
+                        checked={selections.get(key)?.action === "keep_a"}
+                        onChange={() => toggleSelection(pair, "keep_a")}
                         onClick={(e) => e.stopPropagation()}
                         className="accent-emerald-500"
                         title="Keep this, delete the other"
@@ -322,10 +343,10 @@ export default function DuplicatesPage() {
                       {formatDate(pair.created_a)}
                     </time>
                     <div className="flex items-center gap-2">
-                      {selections[key] === "keep_a" && (
+                      {selections.get(key)?.action === "keep_a" && (
                         <span className="text-xs text-emerald-400 font-medium">Keep</span>
                       )}
-                      {selections[key] === "keep_b" && (
+                      {selections.get(key)?.action === "keep_b" && (
                         <span className="text-xs text-red-400 font-medium">Delete</span>
                       )}
                       <button
@@ -345,21 +366,21 @@ export default function DuplicatesPage() {
                 {/* Right: Thought B */}
                 <div
                   className={`bg-bg-elevated rounded-lg p-3 space-y-2 cursor-pointer border-2 transition-colors ${
-                    selections[key] === "keep_b"
+                    selections.get(key)?.action === "keep_b"
                       ? "border-emerald-500/50 bg-emerald-500/5"
-                      : selections[key] === "keep_a"
+                      : selections.get(key)?.action === "keep_a"
                         ? "border-red-500/30 bg-red-500/5"
                         : "border-transparent"
                   }`}
-                  onClick={() => toggleSelection(key, "keep_b")}
+                  onClick={() => toggleSelection(pair, "keep_b")}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <input
                         type="radio"
                         name={`pair-${key}`}
-                        checked={selections[key] === "keep_b"}
-                        onChange={() => toggleSelection(key, "keep_b")}
+                        checked={selections.get(key)?.action === "keep_b"}
+                        onChange={() => toggleSelection(pair, "keep_b")}
                         onClick={(e) => e.stopPropagation()}
                         className="accent-emerald-500"
                         title="Keep this, delete the other"
@@ -387,10 +408,10 @@ export default function DuplicatesPage() {
                       {formatDate(pair.created_b)}
                     </time>
                     <div className="flex items-center gap-2">
-                      {selections[key] === "keep_b" && (
+                      {selections.get(key)?.action === "keep_b" && (
                         <span className="text-xs text-emerald-400 font-medium">Keep</span>
                       )}
-                      {selections[key] === "keep_a" && (
+                      {selections.get(key)?.action === "keep_a" && (
                         <span className="text-xs text-red-400 font-medium">Delete</span>
                       )}
                       <button
@@ -467,8 +488,9 @@ export default function DuplicatesPage() {
 
       {/* Confirm batch resolve modal */}
       {confirmBatch && (() => {
-        const deleteCount = Object.values(selections).filter(s => s === "keep_a" || s === "keep_b").length;
-        const keepBothCount = Object.values(selections).filter(s => s === "keep_both").length;
+        const actions = Array.from(selections.values()).map((s) => s.action);
+        const deleteCount = actions.filter((a) => a === "keep_a" || a === "keep_b").length;
+        const keepBothCount = actions.filter((a) => a === "keep_both").length;
         const parts: string[] = [];
         if (deleteCount > 0) parts.push(`delete ${deleteCount} duplicate${deleteCount > 1 ? "s" : ""}`);
         if (keepBothCount > 0) parts.push(`dismiss ${keepBothCount} pair${keepBothCount > 1 ? "s" : ""}`);
