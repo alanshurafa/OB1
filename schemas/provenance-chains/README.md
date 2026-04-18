@@ -137,6 +137,7 @@ DROP INDEX IF EXISTS public.idx_thoughts_derivation_layer;
 DROP INDEX IF EXISTS public.idx_thoughts_derived_from;
 
 -- Drop constraints
+ALTER TABLE public.thoughts DROP CONSTRAINT IF EXISTS thoughts_derived_from_uuid_elements_check;
 ALTER TABLE public.thoughts DROP CONSTRAINT IF EXISTS thoughts_derived_from_is_array_check;
 ALTER TABLE public.thoughts DROP CONSTRAINT IF EXISTS thoughts_derivation_method_check;
 ALTER TABLE public.thoughts DROP CONSTRAINT IF EXISTS thoughts_derivation_layer_check;
