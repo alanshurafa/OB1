@@ -258,6 +258,17 @@ async function main() {
     patchedWithoutParents: 0,
     errors: 0,
     halfMigrated: 0,
+    // Rows whose artifact could not be parsed (e.g., INT_REF_RE matches on
+    // a UUID install). The caller still flips derivation_layer='derived'
+    // with backfill_reason="parse error: ..." so the row is not left
+    // half-migrated, but the provenance was NOT captured. Count separately
+    // from transport errors — re-running `--force` won't help until the
+    // operator fixes the artifact or the INT_REF_RE policy. Triggers
+    // exit code 1 so unattended runs surface malformed refs.
+    parseErrors: 0,
+    // Thought IDs whose parseParentIds threw. Capped to the first 10 so
+    // the end-of-run WARN stays bounded on large runs.
+    parseErrorIds: [],
     // Rows that vanished between the candidate GET and the PATCH — the
     // PATCH matched zero rows. These are NOT half-migrated: there is no
     // row left to repair, so `--force` wouldn't help. Counted separately
@@ -297,6 +308,15 @@ async function main() {
         }
       } catch (err) {
         reason = `parse error: ${err.message}`;
+        // Track parse failures separately from transport errors so the
+        // exit code can surface them. We still flip derivation_layer to
+        // 'derived' below with backfill_reason set — the row isn't half-
+        // migrated, but the provenance was NOT captured. Unattended runs
+        // need a non-zero exit to notice this.
+        summary.parseErrors++;
+        if (summary.parseErrorIds.length < 10) {
+          summary.parseErrorIds.push(row.id);
+        }
       }
     }
 
@@ -411,14 +431,29 @@ async function main() {
       `there is nothing to repair — and do not trigger a non-zero exit.`,
     );
   }
+  if (summary.parseErrors > 0) {
+    const sample = summary.parseErrorIds.join(", ");
+    const suffix = summary.parseErrors > summary.parseErrorIds.length
+      ? ` (showing first ${summary.parseErrorIds.length})`
+      : "";
+    console.warn(
+      `[backfill] WARN — ${summary.parseErrors} row(s) had parse errors` +
+      `${suffix}: ${sample}. derivation_layer was still flipped to ` +
+      `'derived' with backfill_reason set, but provenance was NOT ` +
+      `captured. Fix the artifact (or INT_REF_RE policy) and re-run ` +
+      `with --force.`,
+    );
+  }
   // Exit codes:
-  //   2 — hard errors (HTTP failure, parse error, etc.). Operator must
+  //   2 — hard errors (HTTP failure, RPC failure, etc.). Operator must
   //       investigate; re-running blindly may not help.
-  //   1 — half-migrated rows only. Safe to re-run with --force; idempotent.
+  //   1 — half-migrated rows or parse errors. Safe to re-run with --force
+  //       once the underlying artifact/policy is fixed; both write paths
+  //       are idempotent.
   //   0 — clean completion, including "deleted during backfill" cases
   //       (no repair possible).
   if (summary.errors > 0) process.exit(2);
-  if (summary.halfMigrated > 0) process.exit(1);
+  if (summary.halfMigrated > 0 || summary.parseErrors > 0) process.exit(1);
 }
 
 main().catch((err) => {

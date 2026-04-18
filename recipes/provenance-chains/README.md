@@ -160,11 +160,12 @@ provenance fields like `derivation_layer`, `derivation_method`, and
 which merges into `metadata.provenance`). Three terminal states per row
 are tracked in the summary counters, and they map 1:1 to exit codes:
 
-| Counter                   | What it means                                                                                   | Exit trigger |
-| ------------------------- | ----------------------------------------------------------------------------------------------- | ------------ |
-| `errors`                  | Hard failure — HTTP error, parse error, or any exception not handled below.                     | exit `2`     |
-| `halfMigrated`            | Column PATCH succeeded but the metadata merge RPC failed (transient, cache lag, permission).    | exit `1`     |
-| `deletedDuringBackfill`   | The row vanished between the candidate GET and the PATCH — PATCH matched zero rows.             | no effect    |
+| Counter                   | What it means                                                                                          | Exit trigger |
+| ------------------------- | ------------------------------------------------------------------------------------------------------ | ------------ |
+| `errors`                  | Hard failure — HTTP/transport error or RPC exception on a row that otherwise parsed cleanly.           | exit `2`     |
+| `halfMigrated`            | Column PATCH succeeded but the metadata merge RPC failed (transient, cache lag, permission).           | exit `1`     |
+| `parseErrors`             | `parseParentIds` threw (e.g., integer refs on a UUID install). Row flipped to `derived` with no parents.| exit `1`     |
+| `deletedDuringBackfill`   | The row vanished between the candidate GET and the PATCH — PATCH matched zero rows.                    | no effect    |
 
 Half-migrated rows leave the top-level columns set but `metadata.provenance`
 missing. Default reruns skip rows that already have `derivation_layer='derived'`,
@@ -186,9 +187,10 @@ backfill's candidate fetch and its PATCH. There is no row left to repair,
 so `--force` cannot resurrect it and this case is neutral info — it does
 NOT trigger a non-zero exit.
 
-Exit code summary: `2` for hard errors, `1` for half-migrated rows only,
-`0` for clean completion (including concurrent-delete cases). Re-run with
-`--force` to repair half-migrations.
+Exit code summary: `2` for hard errors, `1` for half-migrated rows or parse
+errors, `0` for clean completion (including concurrent-delete cases).
+Re-run with `--force` to repair half-migrations. Parse errors require fixing
+the artifact (or the `INT_REF_RE` policy) first, then `--force`.
 
 ## Troubleshooting
 
