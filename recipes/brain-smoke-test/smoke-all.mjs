@@ -679,23 +679,12 @@ const coreChecks = [
       throw new Error("smoke tag not in search results");
     },
   },
-  {
-    name: "Cleanup: delete test rows",
-    fn: async (_s) => {
-      // Delegate to deleteSmokeRows -- same function the SIGINT/SIGTERM
-      // handlers call, so the cleanup path is identical in the happy case
-      // and the interrupted case. The three-state flags dedupe both AND
-      // make the actual outcome visible to the check result instead of
-      // false-greening on a failed DELETE.
-      const outcome = await deleteSmokeRows("normal cleanup");
-      if (outcome?.ok) return "deleted";
-      // Fail loudly: the finally handler will attempt one more retry, but
-      // the user still needs to see this in the dashboard so they know to
-      // check for residue tagged with SMOKE_TAG.
-      const code = outcome?.status ? `HTTP ${outcome.status}` : "threw";
-      throw new Error(`cleanup-failed (${code}); manual delete: tag=${SMOKE_TAG}`);
-    },
-  },
+  // NOTE: the Cleanup check used to live here as a regular runCheck entry,
+  // but that made the dashboard lie: a failed DELETE would push a stale
+  // "fail" entry into results, and even if the finally-block retry later
+  // succeeded, the original failed entry still counted in totals.fail. The
+  // Cleanup check is now synthesised in main() AFTER the finally retry has
+  // run, so the reported status reflects the true final state.
 ];
 
 // ---------------------------------------------------------------------------
@@ -857,22 +846,47 @@ async function main() {
       // mid-way throws. The SIGINT/SIGTERM handlers cover ctrl-c / kill.
       coreFeaturesRan = true;
       installDestructiveCleanupHooks();
+      // Cleanup state tracker -- populated during the first attempt inside
+      // the category run and the retry inside the finally. We DO NOT push
+      // to results until both have settled so the dashboard reports the
+      // true final outcome of cleanup (not a stale mid-flight "fail").
+      let cleanupAttempts = 0;
+      let cleanupLastError = null;
+      let cleanupT0 = 0;
+      let cleanupMs = 0;
       try {
         for (const check of category.checks) {
           const outcome = await runCheck(check.fn);
           results.push({ category: category.name, name: check.name, ...outcome });
         }
+        // First cleanup attempt (inside the try so a thrown DELETE does not
+        // hide the rest of the run's results, but before finally so the
+        // retry path only runs when this attempt genuinely failed).
+        cleanupT0 = Date.now();
+        cleanupAttempts = 1;
+        const first = await deleteSmokeRows("normal cleanup");
+        cleanupMs = Date.now() - cleanupT0;
+        if (!first?.ok) {
+          cleanupLastError = first?.status ? `HTTP ${first.status}` : "threw";
+        }
       } finally {
         // Three-state retry policy:
         //   1. If cleanup never attempted (SIGINT mid-test, early throw before
-        //      the normal cleanup check), run it now.
+        //      the normal cleanup attempt above), run it now and count it as
+        //      attempt 1.
         //   2. If cleanup was attempted and failed, retry exactly once before
         //      giving up -- transient 5xx is common and the UUID tag keeps
         //      the retry scoped to this run.
         //   3. If cleanup already succeeded (cleanupRan), deleteSmokeRows
         //      short-circuits and returns immediately.
-        if (!cleanupRan && !cleanupFailed) {
-          await deleteSmokeRows("finally cleanup");
+        if (!cleanupRan && !cleanupFailed && cleanupAttempts === 0) {
+          cleanupT0 = Date.now();
+          cleanupAttempts = 1;
+          const out = await deleteSmokeRows("finally cleanup");
+          cleanupMs = Date.now() - cleanupT0;
+          if (!out?.ok) {
+            cleanupLastError = out?.status ? `HTTP ${out.status}` : "threw";
+          }
         } else if (cleanupFailed) {
           process.stderr.write(
             `WARN: previous cleanup attempt failed; retrying once. Tag: ${SMOKE_TAG}\n`,
@@ -880,12 +894,47 @@ async function main() {
           // Reset the failed flag so deleteSmokeRows runs again rather than
           // short-circuiting on the in-flight/failed state.
           cleanupFailed = false;
-          await deleteSmokeRows("finally retry");
-          if (cleanupFailed) {
+          const retryT0 = Date.now();
+          cleanupAttempts = 2;
+          const retry = await deleteSmokeRows("finally retry");
+          cleanupMs += Date.now() - retryT0;
+          if (retry?.ok) {
+            cleanupLastError = null;
+          } else {
+            cleanupLastError = retry?.status ? `HTTP ${retry.status}` : "threw";
             process.stderr.write(
               `ERROR: cleanup still failed after retry. Manually delete rows ` +
               `where metadata->>tag = '${SMOKE_TAG}'\n`,
             );
+          }
+        }
+        // Synthesize the single authoritative Cleanup entry now that all
+        // attempts have settled. This replaces the stale-on-retry check
+        // that used to live inside coreChecks.
+        if (cleanupAttempts > 0) {
+          const attemptNote =
+            cleanupAttempts === 1 ? "deleted on first attempt" : "deleted on retry (attempt 2)";
+          if (cleanupRan && !cleanupFailed) {
+            results.push({
+              category: category.name,
+              name: "Cleanup: delete test rows",
+              status: "pass",
+              message: attemptNote,
+              details: null,
+              ms: cleanupMs,
+            });
+          } else {
+            results.push({
+              category: category.name,
+              name: "Cleanup: delete test rows",
+              status: "fail",
+              message:
+                `cleanup-failed after ${cleanupAttempts} attempt${cleanupAttempts === 1 ? "" : "s"}` +
+                `${cleanupLastError ? ` (${cleanupLastError})` : ""}; ` +
+                `manual delete: tag=${SMOKE_TAG}`,
+              details: null,
+              ms: cleanupMs,
+            });
           }
         }
       }
