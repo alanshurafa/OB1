@@ -2,10 +2,10 @@
 /**
  * smoke-all.mjs -- Full-surface smoke test for an Open Brain install.
  *
- * ~30 independent checks across six categories: MCP endpoint, REST API
- * gateway, database schema, access-key enforcement, core capture/search
- * features, and row-level security. Verifies that a freshly-built Open
- * Brain is wired correctly.
+ * ~30 independent checks across seven categories: MCP endpoint, REST API
+ * gateway, database schema, access-key (MCP), core capture/search features,
+ * PostgREST access-key enforcement, and row-level security. Verifies that
+ * a freshly-built Open Brain is wired correctly.
  *
  * Stock Open Brain (docs/01-getting-started.md) needs only the canonical
  * thoughts table, open-brain-mcp Edge Function, and MCP_ACCESS_KEY. Optional
