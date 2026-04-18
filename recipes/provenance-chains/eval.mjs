@@ -413,12 +413,21 @@ function emitQueue(candidates, parentsByChild, outPath) {
 async function applyScoresFromFile(file, dryRun) {
   const raw = fs.readFileSync(file, "utf8");
   const results = [];
+  // Count malformed JSONL lines separately. They do not go into `results`
+  // (there is no thought_id to attribute them to), but they MUST contribute
+  // to the non-zero exit decision — otherwise a corrupted score file
+  // silently drops rows and unattended automation returns exit 0.
+  let malformed = 0;
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); }
-    catch (e) { console.error(`[eval] invalid JSONL line: ${trimmed.slice(0, 120)}`); continue; }
+    catch (e) {
+      console.error(`[eval] invalid JSONL line: ${trimmed.slice(0, 120)}`);
+      malformed++;
+      continue;
+    }
     if (obj.error) {
       results.push({ id: obj.thought_id, error: obj.error });
       continue;
@@ -458,7 +467,10 @@ async function applyScoresFromFile(file, dryRun) {
       results.push(entry);
     }
   }
-  return results;
+  // Return malformed count alongside results so the caller can fold it
+  // into the exit decision. Keeping results[] pure (only attributable
+  // rows) lets the report writer stay unchanged.
+  return { results, malformed };
 }
 
 // ── Report writer ──────────────────────────────────────────────────────────
@@ -519,20 +531,26 @@ async function main() {
   // apply-scores short circuit
   if (args.applyScores) {
     console.log(`[eval] applying scores from ${args.applyScores} (dry-run=${args.dryRun})`);
-    const results = await applyScoresFromFile(args.applyScores, args.dryRun);
+    const { results, malformed } = await applyScoresFromFile(args.applyScores, args.dryRun);
     const scored = results.filter((r) => !r.error);
     const errors = results.filter((r) => r.error);
     const missing = errors.filter((r) => /thought not found/i.test(String(r.error ?? "")));
     writeReport(results, summarize(scored), "queue", args.report);
-    console.log(`[eval] applied ${scored.length}/${results.length} scores (errors=${errors.length}, missing=${missing.length})`);
+    console.log(`[eval] applied ${scored.length}/${results.length} scores (errors=${errors.length}, missing=${missing.length}, malformed=${malformed})`);
     if (missing.length > 0) {
       const ids = missing.slice(0, 10).map((r) => r.id);
       const more = missing.length > ids.length ? `, +${missing.length - ids.length} more` : "";
       console.error(`[eval] WARN — ${missing.length} score(s) targeted missing thoughts: ${ids.join(", ")}${more}. Re-verify the score file or regenerate with --grader queue.`);
     }
-    // Non-zero exit if any write failed so unattended automation can detect
-    // half-applied runs. Dry-run never writes, so never exits non-zero here.
-    if (!args.dryRun && errors.length > 0) process.exit(1);
+    if (malformed > 0) {
+      console.error(`[eval] WARN — ${malformed} malformed JSONL line(s) in score file were dropped. Fix the grader output and re-run.`);
+    }
+    // Non-zero exit if any write failed, any thought was missing, or any
+    // JSONL line was malformed, so unattended automation can detect
+    // half-applied runs. Dry-run never writes, so never exits non-zero
+    // here — malformed lines in --dry-run are still logged, but a
+    // dry-run is explicitly a no-op probe.
+    if (!args.dryRun && (errors.length > 0 || malformed > 0)) process.exit(1);
     return;
   }
 
@@ -594,8 +612,14 @@ async function main() {
   const concurrency = args.grader === "stdin" ? 1 : args.concurrency;
   const results = await processInChunks(candidates, gradeOne, concurrency);
   const scored = results.filter((r) => !r.error);
+  const rowErrors = results.filter((r) => r.error);
   writeReport(results, summarize(scored), args.grader, args.report);
-  console.log(`\n[eval] complete: ${scored.length}/${results.length} scored.`);
+  console.log(`\n[eval] complete: ${scored.length}/${results.length} scored (errors=${rowErrors.length}).`);
+  // Non-zero exit if any row failed (grader returned no score, OR an
+  // exception was thrown during grading, OR writeScore failed — including
+  // the "thought not found" case the schema RPC now raises). Dry-run
+  // never writes, so never exits non-zero here.
+  if (!args.dryRun && rowErrors.length > 0) process.exit(1);
 }
 
 main().catch((err) => {
