@@ -70,6 +70,8 @@ OPTIONAL (TIER 3 ONLY)
    > [!NOTE]
    > This recipe now uses the standard `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` variable names used by every other OB1 recipe, so a shared `.env.local` works across the whole repo. The legacy `OPEN_BRAIN_URL` / `OPEN_BRAIN_SERVICE_KEY` names are still accepted (with a deprecation warning) for backward compatibility.
 
+   <!-- -->
+
    > [!WARNING]
    > The service role key bypasses Row Level Security. Keep `.env.local` out of version control and restrict its file permissions.
 
