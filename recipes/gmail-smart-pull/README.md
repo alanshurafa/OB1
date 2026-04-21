@@ -38,7 +38,6 @@ GMAIL SMART PULL -- CREDENTIAL TRACKER
 
 FROM YOUR OPEN BRAIN SETUP
   Project URL:                ____________
-  Service role key:           ____________
   OpenRouter or Anthropic key:____________
 
 GENERATED DURING SETUP
@@ -50,6 +49,9 @@ GENERATED DURING SETUP
 
 --------------------------------------
 ```
+
+> [!NOTE]
+> This recipe does **not** need your Supabase service-role key. The puller emits a pack file; only your downstream ingest pipeline needs the service-role key, and it should read it from environment variables or a secret manager — never from a plaintext tracker.
 
 ## Steps
 
