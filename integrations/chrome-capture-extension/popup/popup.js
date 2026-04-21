@@ -376,10 +376,15 @@
       geminiSyncCancelBtn.style.display = 'inline-block';
       geminiSyncAllBtn.disabled = true;
       geminiSyncAllBtn.textContent = 'Sync All History';
+      geminiSyncAllBtn.dataset.mode = 'start';
     } else {
       geminiSyncCancelBtn.style.display = 'none';
       geminiSyncAllBtn.disabled = false;
       geminiSyncAllBtn.textContent = resumable ? 'Resume Sync' : 'Sync All History';
+      // Record the mode on a data attribute so the click handler doesn't
+      // have to string-match the button label. Makes the flow robust to
+      // future copy/localization changes.
+      geminiSyncAllBtn.dataset.mode = resumable ? 'resume' : 'start';
     }
 
     if (s === 'enumerating') {
@@ -582,11 +587,12 @@
 
   // Gemini sync events. Button toggles between "Sync All History" (fresh
   // run) and "Resume Sync" (pick up a paused/canceled run with pendingIds).
-  // renderGeminiProgress() sets the label based on state; we read it here
-  // to decide which message to send.
+  // renderGeminiProgress() sets `dataset.mode` based on state; we read that
+  // data attribute here so copy/localization changes can't turn a resume
+  // into a fresh sync (which would wipe the current pending queue).
   if (geminiSyncAllBtn) {
     geminiSyncAllBtn.addEventListener('click', () => {
-      const isResume = geminiSyncAllBtn.textContent === 'Resume Sync';
+      const isResume = geminiSyncAllBtn.dataset.mode === 'resume';
       const messageType = isResume ? 'GEMINI_SYNC_RESUME' : 'GEMINI_SYNC_START';
       geminiSyncAllBtn.disabled = true;
       geminiSyncProgress.style.display = 'block';

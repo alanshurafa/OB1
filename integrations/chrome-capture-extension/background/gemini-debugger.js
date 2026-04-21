@@ -54,6 +54,14 @@
   // chrome.storage.local key the popup reads to show the paused indicator.
   const PAUSED_STATE_KEY = 'ob_gemini_paused';
 
+  // Hard cap on batchexecute response-body size before we even try to parse.
+  // Gemini's hNvQHb payload is dominated by the conversation transcript plus
+  // candidate metadata; in practice the largest payloads we've seen in
+  // research fixtures clock in under 2 MB. 8 MB gives us ~4x headroom for
+  // long-thread outliers while protecting the SW from a pathological body
+  // (parser bug, wrong url match, Google format change) OOM'ing the worker.
+  const MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+
   // In-memory mirror of the persisted stash for speed. Canonical copy lives
   // in chrome.storage.session; this map is always re-derivable from there.
   const pendingRequests = new Map();
@@ -353,9 +361,29 @@
         'Network.getResponseBody',
         { requestId }
       );
-      body = typeof result?.body === 'string' ? result.body : null;
-      const bodyLen = body ? body.length : 0;
-      LOG(`body received tab=${tabId} length=${bodyLen} base64=${Boolean(result?.base64Encoded)}`);
+      const rawBody = typeof result?.body === 'string' ? result.body : null;
+      const bodyLen = rawBody ? rawBody.length : 0;
+      const base64Encoded = Boolean(result?.base64Encoded);
+
+      // batchexecute hNvQHb responses are always text/JSON with the anti-XSSI
+      // prefix — never binary. A base64Encoded=true would mean either Gemini
+      // changed its content type or we're misinterpreting a different
+      // request. Drop defensively rather than parse garbage.
+      if (base64Encoded) {
+        ERR(`unexpected base64Encoded body tab=${tabId} requestId=${requestId} length=${bodyLen} — dropping`);
+        await stashDelete(tabId, requestId);
+        return;
+      }
+
+      // Bounded parse. See MAX_RESPONSE_BODY_BYTES for the rationale.
+      if (bodyLen > MAX_RESPONSE_BODY_BYTES) {
+        ERR(`response body exceeds cap tab=${tabId} requestId=${requestId} length=${bodyLen} cap=${MAX_RESPONSE_BODY_BYTES} — dropping`);
+        await stashDelete(tabId, requestId);
+        return;
+      }
+
+      body = rawBody;
+      LOG(`body received tab=${tabId} length=${bodyLen} base64=false`);
     } catch (err) {
       ERR(`getResponseBody failed tab=${tabId} requestId=${requestId}:`, err?.message || err);
       await stashDelete(tabId, requestId);
@@ -386,6 +414,23 @@
     const turns = extractor.extractGeminiHistory({ responseBody });
     if (!Array.isArray(turns) || turns.length === 0) {
       LOG(`history extractor returned empty tab=${tabId} requestId=${requestId} — dropping`);
+      // Best-effort: resolve any sync waiter keyed off the tab's current
+      // conversation id so the orchestrator doesn't block for the full
+      // 15s capture timeout on an empty/malformed payload. We derive the
+      // id from the tab URL (sync navigates the tab to /app/<id>) rather
+      // than the request body, which we don't keep stashed.
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        const tabUrl = typeof tab?.url === 'string' ? tab.url : '';
+        const m = tabUrl.match(/\/app\/([^/?#]+)/);
+        const idFromTab = m ? decodeURIComponent(m[1]) : '';
+        const sync = self.OBGeminiSync;
+        if (idFromTab && sync && typeof sync.notifyHistoryCaptured === 'function') {
+          sync.notifyHistoryCaptured(idFromTab, { captured: 0, skippedDup: 0, other: 0, total: 0 });
+        }
+      } catch (err) {
+        ERR(`empty-payload notify best-effort failed tab=${tabId}:`, err?.message || err);
+      }
       return;
     }
 

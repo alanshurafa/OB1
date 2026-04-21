@@ -721,12 +721,26 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       console.warn('[Open Brain Capture] Gemini auto-sync fired but OBGeminiSync is unavailable');
       return;
     }
-    self.OBGeminiSync.syncIncremental({ trigger: 'alarm' }).then((result) => {
-      console.log(`[Open Brain Capture] Gemini auto-sync complete:`,
-        result && (result.message || `captured=${result.totals?.captured || 0} completed=${result.completed || 0}`));
-    }).catch((error) => {
-      console.error('[Open Brain Capture] Gemini auto-sync failed', error);
-    });
+    // If the previous run is paused on a Google challenge (state=canceled
+    // with pendingIds still queued), DO NOT start a fresh incremental from
+    // the alarm — it would just re-enumerate the sidebar in a new tab and
+    // most likely re-trigger the challenge. The user resumes manually from
+    // the popup after solving the CAPTCHA.
+    (async () => {
+      try {
+        const status = await self.OBGeminiSync.getStatus();
+        const s = status && status.status;
+        if (s && s.state === 'canceled' && Number(s.pending) > 0) {
+          console.log('[Open Brain Capture] Gemini auto-sync skipped: previous run paused (resume from popup)');
+          return;
+        }
+        const result = await self.OBGeminiSync.syncIncremental({ trigger: 'alarm' });
+        console.log(`[Open Brain Capture] Gemini auto-sync complete:`,
+          result && (result.message || `captured=${result.totals?.captured || 0} completed=${result.completed || 0}`));
+      } catch (error) {
+        console.error('[Open Brain Capture] Gemini auto-sync failed', error);
+      }
+    })();
   }
 });
 
