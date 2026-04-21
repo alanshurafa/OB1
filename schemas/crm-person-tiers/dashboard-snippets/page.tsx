@@ -79,26 +79,39 @@ function formatSeen(at?: string | null): string {
   return `${(days / 365).toFixed(1)} years ago`;
 }
 
+type FetchResult =
+  | { ok: true; rows: CrmPersonRow[]; total: number }
+  | { ok: false; error: string };
+
 async function fetchPersonTiers(
   limit = 200,
   offset = 0,
   search?: string
-): Promise<{ rows: CrmPersonRow[]; total: number }> {
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase.rpc("crm_person_tiers", {
-    p_limit: limit,
-    p_offset: offset,
-    p_search: search ?? null,
-  });
+): Promise<FetchResult> {
+  try {
+    const supabase = getSupabaseServerClient();
+    const { data, error } = await supabase.rpc("crm_person_tiers", {
+      p_limit: limit,
+      p_offset: offset,
+      p_search: search ?? null,
+    });
 
-  if (error) {
-    // Surface the error — dashboards can wrap this in an error boundary.
-    throw new Error(`crm_person_tiers RPC failed: ${error.message}`);
+    if (error) {
+      // Log full detail server-side; return a typed failure to the page so
+      // the dashboard can render a controlled error panel instead of
+      // falling through to Next.js's default error surface.
+      console.error("[crm_person_tiers] RPC error", error);
+      return { ok: false, error: error.message };
+    }
+
+    const rows = (data ?? []) as CrmPersonRow[];
+    const total = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
+    return { ok: true, rows, total };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[crm_person_tiers] unexpected failure", err);
+    return { ok: false, error: message };
   }
-
-  const rows = (data ?? []) as CrmPersonRow[];
-  const total = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
-  return { rows, total };
 }
 
 export default async function CrmPage() {
@@ -106,14 +119,22 @@ export default async function CrmPage() {
   const MAX_PAGES = 2;
   const rows: CrmPersonRow[] = [];
   let total = 0;
+  let fetchError: string | null = null;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const r = await fetchPersonTiers(PER_PAGE, page * PER_PAGE);
+    if (!r.ok) {
+      fetchError = r.error;
+      break;
+    }
     total = r.total;
     rows.push(...r.rows);
     if (r.rows.length < PER_PAGE) break;
   }
 
+  // tierCounts reflects the LOADED rows only (up to MAX_PAGES * PER_PAGE).
+  // The UI labels these as "loaded" when total exceeds the cap so users
+  // don't mistake them for a global summary.
   const tierCounts: Record<CrmTier, number> = {
     connected: 0,
     contact: 0,
@@ -121,6 +142,9 @@ export default async function CrmPage() {
     unknown: 0,
   };
   for (const r of rows) tierCounts[r.effective_tier] += 1;
+
+  const loadedCap = PER_PAGE * MAX_PAGES;
+  const hasMore = total > rows.length;
 
   return (
     <div className="space-y-6 p-6">
@@ -133,6 +157,17 @@ export default async function CrmPage() {
           contacts.
         </p>
       </div>
+
+      {fetchError && (
+        <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200">
+          <div className="font-medium mb-1">Could not load CRM persons</div>
+          <p className="text-xs text-rose-200/80">
+            The <code>crm_person_tiers</code> RPC returned an error. Run{" "}
+            <code>NOTIFY pgrst, &apos;reload schema&apos;;</code> in your
+            Supabase SQL editor and confirm the schema has been applied.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {TIER_ORDER.map((t) => (
@@ -156,12 +191,13 @@ export default async function CrmPage() {
       </div>
 
       <div className="text-xs text-slate-400">
-        {rows.length.toLocaleString()} loaded · {total.toLocaleString()} total
-        persons
+        {rows.length.toLocaleString()} loaded
+        {hasMore && ` (of ${total.toLocaleString()} total — per-tier counts above reflect loaded rows only, capped at ${loadedCap.toLocaleString()})`}
+        {!hasMore && total > 0 && ` · ${total.toLocaleString()} total persons`}
       </div>
 
       <div className="space-y-2">
-        {rows.length === 0 && (
+        {rows.length === 0 && !fetchError && (
           <p className="text-sm text-slate-400">
             No persons yet. Insert rows into <code>crm_persons</code> to
             populate this view.
