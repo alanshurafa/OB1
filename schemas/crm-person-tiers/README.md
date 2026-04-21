@@ -62,8 +62,8 @@ SUPABASE (from your Open Brain setup)
 - Indexes on `relationship_tier` and `last_seen_at`
 - Table `public.crm_person_mentions` (person_id + thought_id primary key)
 - Trigger that auto-updates `crm_persons.updated_at`
-- Function `public.crm_person_tiers(p_limit, p_offset, p_search, p_promote_min_mentions, p_promote_within)`
-- Grants for `service_role`, `authenticated`, and `anon`
+- Function `public.crm_person_tiers(p_limit, p_offset, p_search, p_promote_min_mentions, p_promote_within)` (SECURITY INVOKER)
+- Grants: tables → `service_role`; RPC execute → `authenticated` + `service_role` (no `anon`, by design — see Security below)
 - `NOTIFY pgrst, 'reload schema'` so PostgREST picks up the new RPC
 
 </details>
@@ -120,9 +120,18 @@ SUPABASE (from your Open Brain setup)
    );
    ```
 
+## Security
+
+By default, `crm_person_tiers` is `SECURITY INVOKER` with `EXECUTE` granted to `authenticated` and `service_role` only (not `anon`). This is deliberate: if you ship your Supabase **anon** key to a browser or mobile app, any caller with that key could otherwise dump every person's `canonical_name`, `aliases`, and `metadata` from this table. The intended install path is:
+
+- Call the RPC from a **server-side** client that uses the `service_role` key (Next.js server components, Edge Functions, cron jobs), or
+- Call it from an **authenticated** client after you've enabled Row Level Security on `crm_persons` + `crm_person_mentions` with a policy that matches your auth model (e.g. `owner_id = auth.uid()` if you add an `owner_id` column).
+
+If you *want* to expose the RPC to anon clients on purpose (a public "who's in this brain" page), add `GRANT EXECUTE ON FUNCTION public.crm_person_tiers(...) TO anon;` in a follow-up migration, and consider RLS policies first.
+
 ## Optional Dashboard Snippet
 
-`dashboard-snippets/page.tsx` is a drop-in Next.js App Router page that renders the output of the RPC as a tier-grouped people list. See `dashboard-snippets/README.md` for install instructions — short version: copy the file into your dashboard at `app/crm/page.tsx` and update the Supabase client import path.
+`dashboard-snippets/page.tsx` is a drop-in Next.js App Router page that renders the output of the RPC as a tier-grouped people list. It uses a server-side `getSupabaseServerClient()` helper (service-role recommended) to match the least-privilege grants above. See `dashboard-snippets/README.md` for install instructions — short version: copy the file into your dashboard at `app/crm/page.tsx` and update the Supabase client import path.
 
 ## Expected Outcome
 

@@ -129,7 +129,7 @@ RETURNS TABLE (
 )
 LANGUAGE plpgsql
 STABLE
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = public
 AS $$
 DECLARE
@@ -218,13 +218,28 @@ $$;
 -- 5. GRANTS
 --    Supabase no longer auto-grants CRUD permissions to service_role
 --    on new projects, so we grant them explicitly.
+--
+--    Least-privilege read path:
+--      - RPC execution is granted to `authenticated` and `service_role`
+--        only. `anon` is deliberately excluded so an exposed anon key
+--        cannot dump every person's name, aliases, and metadata.
+--      - The function is SECURITY INVOKER (see section 4), so callers
+--        still see only rows their role is allowed to see. If you want
+--        authenticated end-users to read these tables directly, enable
+--        RLS on `crm_persons` and `crm_person_mentions` and add an
+--        explicit SELECT policy; otherwise, call the RPC from a
+--        server-side `service_role` client.
+--      - To expose the RPC to anon clients on purpose (e.g. a public
+--        "who's in this brain" page), explicitly add
+--        `GRANT EXECUTE ... TO anon;` in a follow-up migration after
+--        you've added RLS policies you're comfortable with.
 -- ============================================================
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.crm_persons         TO service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.crm_person_mentions TO service_role;
 
 GRANT EXECUTE ON FUNCTION public.crm_person_tiers(INTEGER, INTEGER, TEXT, INTEGER, INTERVAL)
-  TO authenticated, anon, service_role;
+  TO authenticated, service_role;
 
 COMMENT ON FUNCTION public.crm_person_tiers(INTEGER, INTEGER, TEXT, INTEGER, INTERVAL) IS
   'Paginated list of CRM persons with per-row relationship_tier and a computed effective_tier that promotes high-activity recent contacts to "connected".';

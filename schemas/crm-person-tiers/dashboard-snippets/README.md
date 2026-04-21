@@ -9,7 +9,7 @@ and mention counts without building your own UI.
 
 - This schema (`schemas/crm-person-tiers/schema.sql`) is already applied to your Supabase database
 - A Next.js 13+ App Router dashboard (the `dashboards/open-brain-dashboard-next` template works)
-- A Supabase server-side client helper in your dashboard — `page.tsx` imports from `@/lib/supabase/server` and expects a `getSupabaseServerClient()` function
+- A Supabase **server-side** client helper in your dashboard — `page.tsx` imports from `@/lib/supabase/server` and expects a `getSupabaseServerClient()` function. Use your `service_role` key (or an authenticated session) server-side; the RPC is not granted to `anon` on purpose. See the **Security** section in `../README.md` for why.
 
 ## How to install
 
