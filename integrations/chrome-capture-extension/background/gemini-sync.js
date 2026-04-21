@@ -943,7 +943,14 @@
   // Unhealthy signals:
   //   - Tab no longer exists (user closed it, or Chrome killed it)
   //   - Tab URL navigated off gemini.google.com (CAPTCHA, login prompt, ...)
-  //   - Phase B's debugger isn't attached to our sync tab
+  //
+  // Note: we intentionally do NOT treat "debugger not attached" as unhealthy
+  // here. On a fresh sync the tab is created before Phase B's tab-onUpdated
+  // listener fires chrome.debugger.attach, and mainLoop's first iteration
+  // would race against that attach and falsely flag the run as paused.
+  // driveConversation() handles attach waiting explicitly via
+  // waitForDebuggerAttach(), so detaching-without-navigation surfaces there
+  // as a capture timeout (recoverable) rather than here as a hard pause.
   //
   // Returns { healthy: boolean, reason?: string }.
   async function checkSyncTabHealthy(syncTabId) {
@@ -968,10 +975,6 @@
         healthy: false,
         reason: `sync tab navigated away (${host}) — likely Google challenge`
       };
-    }
-    const attachedTabs = self.OBGeminiDebugger && self.OBGeminiDebugger._attachedTabs;
-    if (attachedTabs && typeof attachedTabs.has === 'function' && !attachedTabs.has(syncTabId)) {
-      return { healthy: false, reason: 'debugger not attached to sync tab' };
     }
     return { healthy: true };
   }
