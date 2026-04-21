@@ -80,9 +80,9 @@ When you click **Save & Grant Permission**, Chrome shows a native permission pro
 4. Watch the Activity log on the Overview tab — you should see `captured` and the sent counter tick up
 5. Confirm the thought arrived in your Open Brain (query `search_thoughts` or peek at your database's `thoughts` table)
 
-**Bulk backfill (Claude and ChatGPT):**
+**Bulk backfill (Claude, ChatGPT, and Gemini):**
 
-Switch to the Sync tab and click **Sync All** under the platform you want to import. The extension walks the platform's internal conversation API using your existing logged-in session and funnels every conversation through the capture pipeline. Dedup is handled automatically via SHA-256 content fingerprints — running Sync All twice is safe. Incremental **Sync New** only imports conversations whose `updated_at` has changed since the last run. Optionally turn on **Auto-sync every 15 min** to keep new conversations flowing in hands-free.
+Switch to the Sync tab and click **Sync All** under the platform you want to import. For Claude and ChatGPT the extension walks each platform's internal conversation API using your existing logged-in session; for Gemini it uses a `chrome.debugger`-based history capture (see "Gemini bulk history sync (Phase B/C)" below). Every path funnels through the same ingest pipeline, and dedup is handled via SHA-256 content fingerprints — running Sync All twice is safe. Incremental **Sync New** imports only conversations not yet captured. Optionally turn on **Auto-sync** to keep new conversations flowing in hands-free (15 min cadence for Claude/ChatGPT, 4 h for Gemini).
 
 ## Supported Sites
 
@@ -90,7 +90,7 @@ Switch to the Sync tab and click **Sync All** under the platform you want to imp
 |------|---------------|-----------|-------|
 | `claude.ai` | Yes | Yes | Uses Claude's internal `/api/organizations/.../chat_conversations` endpoint for bulk sync. DOM extractor walks open shadow roots to survive UI refactors. |
 | `chatgpt.com`, `chat.openai.com` | Yes | Yes | Uses ChatGPT's `/backend-api/conversations` for bulk sync and `data-message-author-role` selectors for manual capture. |
-| `gemini.google.com` | Yes (best-effort) | No | Google exposes no conversation API. Manual capture only. Selectors target `<user-query>` and `<model-response>` Web Components — Google rewrites this UI frequently, so extractor fragility is expected. |
+| `gemini.google.com` | Yes (best-effort) | Yes (debugger-based) | Google exposes no public conversation API, so bulk sync uses `chrome.debugger` to observe Gemini's internal `batchexecute` history-load RPC (`rpcids=hNvQHb`). The "Debugging this browser" banner appears while syncing — see the Gemini bulk history sync section below. Manual-capture selectors target `<user-query>` and `<model-response>` Web Components and may drift with Google UI refreshes. |
 
 ## Architecture
 
@@ -120,6 +120,30 @@ Switch to the Sync tab and click **Sync All** under the platform you want to imp
 ```
 
 The service worker is the only network caller. Content scripts never touch the network — they only extract DOM text and hand it over via `chrome.runtime.sendMessage`. This keeps the API key out of every page's origin and makes the permission model reviewable.
+
+## Gemini bulk history sync (Phase B/C)
+
+Google does not expose a public conversation API for Gemini, so bulk backfill uses a two-part flow that observes Gemini's own internal traffic instead of scraping the DOM.
+
+**Phase B — chrome.debugger history capture.** When a Gemini tab is open, the extension attaches the MV3 debugger protocol (`chrome.debugger.attach`) and watches `Network.requestWillBeSent`/`loadingFinished` for exactly one URL pattern: `batchexecute` requests with `rpcids=hNvQHb` (Gemini's history-load RPC). Other batchexecute rpcids (`MaZiqc`, `ESY5D`, `L5adhe`, and so on — sidebar, settings, status) are ignored. On `loadingFinished` the service worker fetches the response body via `Network.getResponseBody`, parses the framed positional JSON, and funnels every user+assistant turn in the conversation through the existing capture pipeline (retry queue, sensitivity filter, fingerprint dedup, session metrics). No DOM scraping, no parallel `/ingest` path.
+
+**Phase C — Sync All orchestrator.** The Sync tab exposes three Gemini controls:
+
+- **Sync All History** — enumerates every conversation link in your Gemini sidebar (scrolling to load the full list), opens a dedicated background tab, and drives it through each conversation one at a time. Phase B observes the history-load RPC that Gemini fires on page load and resolves a per-conversation waiter. Fingerprint dedup guarantees that re-running Sync All is safe — already-captured turns return `duplicate_fingerprint` / `existing`.
+- **Sync New** — same enumeration, but filters against a lifetime list of synced conversation IDs so only conversations you've never captured get navigated. Safe for scheduled use.
+- **Auto-sync every 4 hours** — optional. When on, a `chrome.alarms`-driven 4h cadence calls Sync New (capped at 20 conversations per cycle) so new Gemini conversations land in your Open Brain hands-free. Off by default.
+
+A per-conversation jittered throttle (4–12 s plus a longer "reading pause" every 10 conversations) keeps cadence off Google's bot-detection radar. If Gemini does redirect the sync tab to a CAPTCHA/login page mid-run, the orchestrator detects the unhealthy tab, transitions to a `canceled` paused state, and the Sync All button relabels itself to **Resume Sync**. Solve the challenge in the Gemini tab, then click Resume to pick up where the run left off.
+
+**What this requires at install time:**
+
+- Extra manifest permissions: `debugger` (to attach to Gemini tabs) and `scripting` (to run the sidebar-enumeration helper). Chrome shows a combined permission prompt on install / update — "Read and change your data on gemini.google.com" plus "Debug" language. That is expected.
+- A visible banner while syncing: Chrome shows "Open Brain Capture started debugging this browser" along the top of Chrome whenever `chrome.debugger` is attached. This is mandatory platform UX — dismissing it cancels the debugger session and the extension will flip to the paused state. Leave it open while Sync All is running.
+- No external telemetry, no third-party hosts. Every request that leaves your browser still goes only to your configured Open Brain REST API URL.
+
+**Why use `chrome.debugger` instead of a content script.** Content scripts can't observe cross-origin response bodies. The Gemini history-load payload is a framed positional-array blob that mixes anti-XSSI prefixes with length-prefixed JSON chunks — parsing it from a `fetch()` interceptor in page context would be fragile and require re-implementing half of Google's `batchexecute` protocol in the page. The debugger path gets the raw response bytes exactly as Gemini's own JS receives them.
+
+**Turn off:** set the Gemini toggle to off in Settings, and the debugger detaches from every open Gemini tab immediately. Uninstalling the extension clears all persisted state (sync state, fingerprint cache, retry queue) with it.
 
 ## Host Permissions Approach
 
@@ -152,9 +176,11 @@ The `content_scripts` entries for `claude.ai`, `chatgpt.com`, and `gemini.google
 2. Fill in the store listing: description, category (Productivity), screenshots, privacy policy URL
 3. Draft the **permission justifications** — the store review team requires a paragraph per declared permission. Suggested text:
    - `storage` — "Persists user-supplied Open Brain API URL, API key, and per-platform capture toggles."
-   - `alarms` — "Scheduled retry of failed ingests and optional 15-minute auto-sync from Claude/ChatGPT."
-   - `activeTab`, `tabs` — "Resolves the active conversation tab when the user clicks Capture."
+   - `alarms` — "Scheduled retry of failed ingests and optional auto-sync from Claude/ChatGPT (15 min) and Gemini (4 hours)."
+   - `activeTab`, `tabs` — "Resolves the active conversation tab when the user clicks Capture and creates a transient background tab to drive Gemini bulk sync."
    - `cookies` — "Reads the `lastActiveOrg` cookie on claude.ai and the session cookie on chatgpt.com to bulk-fetch conversations via each platform's internal API using the user's own session."
+   - `debugger` — "Attaches the debugger protocol to gemini.google.com tabs only, and only to observe the one internal history-load RPC (`batchexecute` with `rpcids=hNvQHb`) that Gemini itself calls to load conversation turns. No injected code, no DOM modification, no other origins."
+   - `scripting` — "Runs a single sidebar-enumeration helper in the Gemini tab to collect conversation IDs for bulk sync. The helper only reads `a[href*=\"/app/\"]` anchors; it does not mutate the page."
    - Host permissions for `claude.ai`, `chatgpt.com`, `chat.openai.com`, `gemini.google.com` — "Content scripts extract the latest conversation turn from the page DOM when the user clicks Capture."
    - `optional_host_permissions` — "Runtime-granted by the user to reach their specific Open Brain API URL."
 4. Pay the $5 one-time developer registration fee
@@ -168,7 +194,7 @@ Alternatively, host the packed `.crx` on a maintainer-owned update URL and let u
 - **Bulk sync depends on vendor-internal APIs that are not publicly supported.** Anthropic's `/api/organizations/.../chat_conversations` and OpenAI's `/backend-api/conversations` endpoints are undocumented and subject to change without notice. Expect periodic maintenance PRs. If you rely on auto-sync, monitor the Sync Log tab for sustained errors.
 - **DOM extraction is fragile.** Claude, ChatGPT, and Gemini all ship UI rewrites without notice. When a platform shuffles its selectors, manual capture returns "No conversation turns found" until the extractor is updated. The Gemini extractor is especially exposed — Google ships new Gemini UIs every few months. Expect occasional maintenance PRs. Bulk sync (Claude + ChatGPT) uses stable internal JSON APIs and is far less fragile than DOM extraction.
 - **No passive/ambient capture.** The extension only captures when the user explicitly clicks Capture or runs Sync. A previous "observe every turn" design was retired because keeping up with selector churn on every render was not sustainable. The Settings panel has no Auto/Manual capture-mode toggle — that UI was dropped in the initial public release because it controlled only the ambient path. If ambient capture ever ships, the toggle comes back with it.
-- **Gemini has no bulk sync.** Google does not expose a conversation history API outside the Gemini UI. Manual capture is the only option.
+- **Gemini bulk sync relies on the debugger protocol.** Google does not expose a public conversation history API. The extension observes Gemini's own internal `batchexecute` history-load RPC via `chrome.debugger`, which requires Chrome to show the "Open Brain Capture started debugging this browser" banner while a run is live — dismissing the banner detaches the debugger and pauses the sync. See "Gemini bulk history sync (Phase B/C)" for the full flow.
 - **Large conversations.** The REST API `/ingest` endpoint accepts a single payload per request. A 400-turn Claude thread becomes one very large POST. If your gateway has a request size cap (Supabase default is 10MB), Sync All may dead-letter the longest conversations. Check the activity log and trim in your dashboard if that happens.
 - **Sensitivity filter is regex-only.** It's deliberately conservative — false negatives are possible. Treat it as a guardrail, not a vault. For truly sensitive content, don't paste it into an AI chat in the first place.
 
