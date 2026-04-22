@@ -32,7 +32,7 @@ const RESTRICTED_PATTERNS = [
   { reason: "openai_key", regex: /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}\b/ },
   { reason: "anthropic_key", regex: /\bsk-ant-(?:api|admin)\d{0,2}-[A-Za-z0-9_\-]{20,}\b/ },
   { reason: "aws_access_key_id", regex: /\b(?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16}\b/ },
-  { reason: "aws_secret_access_key", regex: /\b(?:aws[_ -]?secret|aws[_ -]?access[_ -]?key)\b[^\n]{0,40}[A-Za-z0-9/+=]{40}\b/i },
+  { reason: "aws_secret_access_key", regex: /\baws[_ -]?(?:secret(?:[_ -]?access[_ -]?key)?|access[_ -]?key)\b[^\n]{0,40}[A-Za-z0-9/+=]{40}\b/i },
   { reason: "gcp_api_key", regex: /\bAIza[A-Za-z0-9_\-]{35}\b/ },
   { reason: "jwt_token", regex: /\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b/ },
   { reason: "pem_private_key", regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/ },
