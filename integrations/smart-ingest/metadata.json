@@ -1,0 +1,21 @@
+{
+  "name": "Smart Ingest",
+  "description": "Supabase Edge Function for creating reviewable ingestion jobs from extracted records and executing approved items into Open Brain.",
+  "category": "integrations",
+  "author": {
+    "name": "Alan Shurafa",
+    "github": "alanshurafa"
+  },
+  "version": "1.0.0",
+  "requires": {
+    "open_brain": true,
+    "services": ["Supabase"],
+    "tools": ["Supabase CLI", "Deno"]
+  },
+  "requires_skills": [],
+  "tags": ["ingestion", "edge-function", "dry-run", "review", "import"],
+  "difficulty": "intermediate",
+  "estimated_time": "20 minutes",
+  "created": "2026-06-06",
+  "updated": "2026-06-06"
+}
