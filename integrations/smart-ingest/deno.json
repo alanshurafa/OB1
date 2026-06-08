@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "check": "deno check index.ts"
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any"]
+    }
+  }
+}
