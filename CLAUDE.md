@@ -47,3 +47,13 @@ Every contribution lives in its own subfolder under the right category and must 
 - `.github/metadata.schema.json` — JSON schema for metadata.json validation
 - `.github/PULL_REQUEST_TEMPLATE.md` — PR description template
 - `LICENSE.md` — FSL-1.1-MIT terms
+
+## Fork Notes (alanshurafa/OB1)
+
+This fork is a working copy of [NateBJones-Projects/OB1](https://github.com/NateBJones-Projects/OB1) used to develop contributions before they go upstream. When working in this fork:
+
+- `main` tracks upstream `main` and carries exactly one fork-local commit: this Fork Notes section. Don't develop on `main`; sync from upstream before branching.
+- Develop on `contrib/alanshurafa/<short-description>` branches, matching the upstream branch convention above.
+- PRs target upstream `NateBJones-Projects/OB1`, not this fork. Follow the upstream PR standards (title format, commit prefixes, automated review workflow) exactly.
+- Keep contributions self-contained: no references to private repos, machine-local paths, or credentials. Everything in this fork is public.
+- This section is fork-only; drop it from any diff or PR sent upstream.
