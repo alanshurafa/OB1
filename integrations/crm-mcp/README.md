@@ -166,3 +166,7 @@ Solution: This is by design. The target field is human-curated (`origin='manual'
 ## Attribution
 
 Ported from a multi-client CRM truth-layer design so any Open Brain user can opt in to the CRM tools without touching the core server.
+
+## More from Nate
+
+Open Brain is built in the open by Nate B. Jones — more practical systems like this on his [Substack](https://substack.com/@natesnewsletter) and at [natebjones.com](https://natebjones.com).

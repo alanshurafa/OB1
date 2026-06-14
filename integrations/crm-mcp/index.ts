@@ -869,7 +869,7 @@ function buildServer(): McpServer {
       inputSchema: {
         contact_id: z.string().uuid().describe("CRM contact UUID"),
         patch: z
-          .record(z.string())
+          .record(z.string(), z.string())
           .describe(
             "Key/value pairs to set. Keys must be from the supported field list; values are strings.",
           ),
