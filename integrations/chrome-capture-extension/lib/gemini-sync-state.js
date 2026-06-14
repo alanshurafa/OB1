@@ -187,8 +187,31 @@
   }
 
   /**
+   * Did a driveConversation result represent a genuine ingest outcome?
+   *
+   * A conversation only earns a place in lifetime `everSyncedIds` (which makes
+   * incremental/auto-sync skip it forever) when at least one turn was actually
+   * ingested (`captured`) or recognized as already present in the brain
+   * (`skippedDup` — duplicate_fingerprint / existing). Results made up purely
+   * of `other` outcomes — platform disabled, sensitivity-restricted, unknown
+   * statuses, per-turn errors — captured nothing, so the conversation must
+   * stay eligible for a future run rather than being permanently skipped.
+   */
+  function wasGenuinelyIngested(result) {
+    if (!result || typeof result !== 'object') return false;
+    const captured = Number(result.captured) || 0;
+    const skippedDup = Number(result.skippedDup) || 0;
+    return captured > 0 || skippedDup > 0;
+  }
+
+  /**
    * Called after a conversation completes. Moves `id` from pendingIds into
    * completedIds and folds the per-turn counts into totals.
+   *
+   * Only conversations that genuinely ingested (see `wasGenuinelyIngested`)
+   * are added to lifetime `everSyncedIds`; a completion made up purely of
+   * non-ingest outcomes (e.g. `disabled_platform`) stays eligible for a
+   * future run.
    *
    * `result` shape: { captured, skippedDup, other, total }
    */
@@ -211,10 +234,17 @@
       record.completedIds.push(id);
     }
 
-    // Lifetime memory — survives resetToIdle. Incremental/auto-sync uses
-    // this to skip already-captured conversations.
+    // Lifetime memory — survives resetToIdle. Incremental/auto-sync uses this
+    // to skip already-captured conversations. ONLY record genuinely-ingested
+    // conversations here: a completion whose turns were all non-ingest
+    // outcomes (disabled_platform, restricted_blocked, unknown statuses)
+    // captured nothing and must remain eligible for a future run, otherwise
+    // filterToNewIds would skip it permanently even though the brain holds
+    // none of its turns.
     if (!Array.isArray(record.everSyncedIds)) record.everSyncedIds = [];
-    if (!record.everSyncedIds.includes(id)) record.everSyncedIds.push(id);
+    if (wasGenuinelyIngested(result) && !record.everSyncedIds.includes(id)) {
+      record.everSyncedIds.push(id);
+    }
 
     if (!alreadyCompleted) {
       const safe = result && typeof result === 'object' ? result : {};
@@ -391,6 +421,7 @@
     recordCompletion,
     recordFailure,
     filterToNewIds,
+    wasGenuinelyIngested,
     summarizeProgress,
     createWaiterRegistry
   };

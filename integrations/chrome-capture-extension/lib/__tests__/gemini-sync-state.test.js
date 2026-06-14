@@ -238,6 +238,58 @@ test('recordCompletion does NOT fold totals twice for a duplicate id', () => {
   assert.equal(s.totals.turnsSeen, 4);
 });
 
+// ── everSyncedIds gating (lifetime skip only on genuine ingest) ──────────────
+
+test('recordCompletion records everSyncedIds when turns were captured', () => {
+  const s = stateMod.createInitialState();
+  s.pendingIds = ['conv'];
+  stateMod.recordCompletion(s, 'conv', { captured: 2, skippedDup: 0, other: 0, total: 2 });
+  assert.deepEqual(s.everSyncedIds, ['conv']);
+});
+
+test('recordCompletion records everSyncedIds when turns were dedup (already in brain)', () => {
+  const s = stateMod.createInitialState();
+  s.pendingIds = ['conv'];
+  stateMod.recordCompletion(s, 'conv', { captured: 0, skippedDup: 3, other: 0, total: 3 });
+  assert.deepEqual(s.everSyncedIds, ['conv']);
+});
+
+test('recordCompletion does NOT record everSyncedIds when nothing ingested (disabled_platform)', () => {
+  // Every turn returned a non-ingest status (e.g. disabled_platform), so the
+  // result is all `other`. The conversation captured nothing and must stay
+  // eligible for a future run — it must NOT land in everSyncedIds, otherwise
+  // filterToNewIds would skip it forever.
+  const s = stateMod.createInitialState();
+  s.pendingIds = ['conv'];
+  stateMod.recordCompletion(s, 'conv', { captured: 0, skippedDup: 0, other: 4, total: 4 });
+  assert.deepEqual(s.everSyncedIds, []);
+  // It still counts as completed for in-run progress/cap accounting.
+  assert.deepEqual(s.completedIds, ['conv']);
+});
+
+test('recordCompletion does NOT record everSyncedIds on a null/empty result', () => {
+  const s = stateMod.createInitialState();
+  s.pendingIds = ['conv'];
+  stateMod.recordCompletion(s, 'conv', null);
+  assert.deepEqual(s.everSyncedIds, []);
+});
+
+test('non-ingested completion stays eligible via filterToNewIds for a later run', () => {
+  const s = stateMod.createInitialState();
+  s.pendingIds = ['conv'];
+  stateMod.recordCompletion(s, 'conv', { captured: 0, skippedDup: 0, other: 1, total: 1 });
+  // A subsequent incremental enumeration still offers it as new.
+  assert.deepEqual(stateMod.filterToNewIds(s, ['conv'], 100), ['conv']);
+});
+
+test('wasGenuinelyIngested predicate is true only for captured or dedup', () => {
+  assert.equal(stateMod.wasGenuinelyIngested({ captured: 1, skippedDup: 0, other: 0 }), true);
+  assert.equal(stateMod.wasGenuinelyIngested({ captured: 0, skippedDup: 1, other: 0 }), true);
+  assert.equal(stateMod.wasGenuinelyIngested({ captured: 0, skippedDup: 0, other: 5 }), false);
+  assert.equal(stateMod.wasGenuinelyIngested(null), false);
+  assert.equal(stateMod.wasGenuinelyIngested({}), false);
+});
+
 // ── summarizeProgress ───────────────────────────────────────────────────────
 
 test('summarizeProgress computes percent from completed + failed', () => {
