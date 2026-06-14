@@ -54,6 +54,22 @@ There is no Gmail pipeline, no entity graph, and no projection cache in this
 path — a fresh Open Brain install with CRM core gets a working queue with
 nothing but the rows you enter.
 
+Two behaviours keep the queue honest over time:
+
+- **Versioned suggestion keys.** A suggestion's key includes the source item it
+  came from — the driving task's id for an overdue / due-soon task, the
+  resolved occurrence for an upcoming date, the last-interaction epoch for a
+  reconnect. Dismissing or converting a suggestion therefore only silences
+  *that* item. When a genuinely new task goes overdue months later, or a
+  reconnected relationship goes quiet again, a fresh key re-enters the queue
+  instead of being suppressed by the old review. Always read `suggestion_key`
+  back from the queue rather than constructing it by hand.
+- **Convert links, never duplicates.** Converting an overdue-task or due-soon
+  suggestion links the review to the task it was derived from
+  (`metadata.linked_existing_task = true`) rather than minting a second,
+  immediately-overdue copy. Only suggestions with no backing task (upcoming
+  date, reconnect) create a new follow-up on convert.
+
 ## ID contract
 
 Every primary key is a UUID (`gen_random_uuid()`). `contact_id` is
@@ -158,18 +174,28 @@ select public.crm_contact_relationship_health(
 -- → status "needs_attention", next_action_kind "overdue_task",
 --   reasons including "overdue_task" and "upcoming_date".
 
--- 6. Get a keep-in-touch suggestion.
+-- 6. Get a keep-in-touch suggestion. Copy the suggestion_key it returns —
+--    it is versioned per source item (here, the overdue task's id), so always
+--    read it from the queue rather than constructing it by hand.
 select suggestion_key, priority, summary, suggested_task_title
 from public.crm_keep_in_touch_suggestions();
 -- → one high-priority row: "Review overdue follow-up with Ada Lovelace."
+--   suggestion_key e.g.
+--   keep_in_touch:11111111-...-111111111111:overdue_task:<overdue-task-uuid>
 
--- 7. Act on it: convert the suggestion into a real follow-up task.
+-- 7. Act on it: convert the suggestion. Because this suggestion was derived
+--    from an existing overdue task, convert LINKS that task into the review
+--    instead of creating a duplicate. Pass the suggestion_key from step 6.
 select public.crm_update_keep_in_touch_suggestion(
   '11111111-1111-1111-1111-111111111111'::uuid,
-  'keep_in_touch:11111111-1111-1111-1111-111111111111:overdue_task',
+  (select suggestion_key
+     from public.crm_keep_in_touch_suggestions(1, 0, 'open',
+            '11111111-1111-1111-1111-111111111111'::uuid)),
   'converted_task'
 );
--- The suggestion is recorded as reviewed and a new task is created.
+-- The suggestion is recorded as reviewed and linked to the existing task
+-- (metadata.linked_existing_task = true). For a non-task suggestion
+-- (upcoming date or reconnect) convert creates a fresh follow-up task instead.
 ```
 
 ## Notes on what is intentionally not here
@@ -185,3 +211,9 @@ select public.crm_update_keep_in_touch_suggestion(
 - **The MCP tool surface** (search / get / next-actions / briefing / add-note /
   add-task / log-interaction) is a separate contribution that builds on this
   schema and CRM core.
+
+## More from Nate
+
+Open Brain is built in the open by Nate B. Jones — more practical systems like
+this on his [Substack](https://substack.com/@natesnewsletter) and at
+[natebjones.com](https://natebjones.com).

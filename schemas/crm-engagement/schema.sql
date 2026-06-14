@@ -975,7 +975,18 @@ AS $$
         WHERE (t.status = 'open'
                OR (t.status = 'snoozed' AND COALESCE(t.snoozed_until, now()) <= now()))
           AND t.due_at IS NOT NULL
-      ) AS next_task_due_at
+      ) AS next_task_due_at,
+      -- Id of the earliest-due active task — the specific task that drives an
+      -- overdue/due-soon action. Carried into the suggestion so the key can
+      -- version per source task (a new overdue task re-enters the queue) and so
+      -- a convert action can link the existing task instead of duplicating it.
+      -- Computed as an aggregate over the same joined task set (ordered by
+      -- due_at then id) so it stays consistent with next_task_due_at.
+      (array_agg(t.id ORDER BY t.due_at ASC NULLS LAST, t.id ASC) FILTER (
+        WHERE (t.status = 'open'
+               OR (t.status = 'snoozed' AND COALESCE(t.snoozed_until, now()) <= now()))
+          AND t.due_at IS NOT NULL
+      ))[1] AS next_task_id
     FROM base b
     JOIN public.crm_contact_tasks t ON t.contact_id = b.id
     CROSS JOIN params p
@@ -1032,6 +1043,7 @@ AS $$
       COALESCE(tr.due_soon_task_count, 0) AS due_soon_task_count,
       COALESCE(tr.snoozed_task_count, 0) AS snoozed_task_count,
       tr.next_task_due_at,
+      tr.next_task_id,
       COALESCE(dr.upcoming_date_count, 0) AS upcoming_date_count,
       dr.next_upcoming_date_on,
       dr.next_upcoming_date_label,
@@ -1106,6 +1118,7 @@ AS $$
     'overdue_task_count', h.overdue_task_count,
     'due_soon_task_count', h.due_soon_task_count,
     'snoozed_task_count', h.snoozed_task_count,
+    'next_task_id', h.next_task_id,
     'upcoming_date_count', h.upcoming_date_count,
     'next_upcoming_date_on', h.next_upcoming_date_on,
     'next_upcoming_date_label', h.next_upcoming_date_label,
@@ -1126,6 +1139,14 @@ GRANT EXECUTE ON FUNCTION public.crm_contact_relationship_health(UUID, BOOLEAN) 
 -- 'none'. The latest review (dismiss / snooze / convert) decides whether the
 -- suggestion is still "open". No Gmail, no entity graph, no projection cache.
 
+-- This function's RETURNS TABLE shape gained a source_task_id column. Postgres
+-- refuses to CREATE OR REPLACE a function with a changed OUT-parameter row type,
+-- so an existing install must drop the old definition first. The DROP is keyed
+-- on the exact argument signature and is a no-op on a fresh database. RPC-to-RPC
+-- calls (crm_update_keep_in_touch_suggestion → this) create no hard dependency,
+-- so the drop is safe to run before the recreate.
+DROP FUNCTION IF EXISTS public.crm_keep_in_touch_suggestions(INTEGER, INTEGER, TEXT, UUID, BOOLEAN);
+
 CREATE OR REPLACE FUNCTION public.crm_keep_in_touch_suggestions(
   p_limit              INTEGER DEFAULT 50,
   p_offset             INTEGER DEFAULT 0,
@@ -1137,6 +1158,7 @@ CREATE OR REPLACE FUNCTION public.crm_keep_in_touch_suggestions(
   display_name          TEXT,
   suggestion_key        TEXT,
   suggestion_kind       TEXT,
+  source_task_id        UUID,
   priority              TEXT,
   summary               TEXT,
   suggested_task_title  TEXT,
@@ -1182,8 +1204,30 @@ AS $$
     SELECT
       s.contact_id,
       s.display_name,
-      'keep_in_touch:' || s.contact_id::text || ':' || COALESCE(s.health->>'next_action_kind', 'none') AS suggestion_key,
+      -- The key carries a per-source-item discriminator so a dismissed or
+      -- converted suggestion does not permanently suppress a genuinely NEW
+      -- later suggestion of the same kind. For task-driven kinds the ref is the
+      -- driving task's id (a new overdue task months later gets a fresh key);
+      -- for an upcoming date it is that date's resolved occurrence (next year's
+      -- instance is a new key); for reconnect it is the last-interaction epoch
+      -- (going quiet again after a reconnect re-enters the queue). When no
+      -- discriminator exists the key falls back to the bare kind.
+      'keep_in_touch:' || s.contact_id::text || ':'
+        || COALESCE(s.health->>'next_action_kind', 'none')
+        || ':' || (
+          CASE COALESCE(s.health->>'next_action_kind', 'none')
+            WHEN 'overdue_task' THEN COALESCE(s.health->>'next_task_id', 'task')
+            WHEN 'due_task'     THEN COALESCE(s.health->>'next_task_id', 'task')
+            WHEN 'upcoming_date' THEN COALESCE(s.health->>'next_upcoming_date_on', 'date')
+            -- Full last-interaction timestamp (not just the date) so a reconnect
+            -- that happens after a dismissed quiet period always yields a fresh
+            -- key, even within the same calendar day.
+            WHEN 'reconnect'    THEN COALESCE(s.health->>'last_meaningful_interaction_at', 'never')
+            ELSE 'none'
+          END
+        ) AS suggestion_key,
       COALESCE(s.health->>'next_action_kind', 'none') AS suggestion_kind,
+      NULLIF(s.health->>'next_task_id', '')::uuid AS source_task_id,
       CASE
         WHEN COALESCE(s.health->>'next_action_kind', 'none') = 'overdue_task' THEN 'high'
         WHEN COALESCE((s.health->>'stale')::boolean, false) THEN 'high'
@@ -1265,6 +1309,7 @@ AS $$
     f.display_name,
     f.suggestion_key,
     f.suggestion_kind,
+    f.source_task_id,
     f.priority,
     f.summary,
     f.suggested_task_title,
@@ -1311,6 +1356,7 @@ DECLARE
   v_review_id      UUID;
   v_task           JSONB := NULL;
   v_task_id        UUID := NULL;
+  v_linked_task    BOOLEAN := false;
 BEGIN
   PERFORM public.crm_engagement_contact_guard(p_contact_id);
   IF v_suggestion_key IS NULL THEN
@@ -1335,19 +1381,46 @@ BEGIN
   END IF;
 
   IF v_action = 'converted_task' THEN
-    v_task := public.crm_add_contact_task(
-      p_contact_id,
-      v_suggestion.suggested_task_title,
-      v_suggestion.summary,
-      'follow_up',
-      'open',
-      v_suggestion.suggested_task_due_at,
-      NULL,
-      CASE WHEN v_suggestion.priority = 'high' THEN 'high' ELSE 'normal' END,
-      'standard',
-      v_actor
-    );
-    v_task_id := NULLIF(v_task->>'id', '')::uuid;
+    -- Task-driven suggestions (overdue_task / due_task) were ALREADY derived
+    -- from an existing open CRM task. Converting must not mint a second,
+    -- immediately-overdue duplicate of that task — instead link the review to
+    -- the existing source task and return it unchanged. Only non-task kinds
+    -- (upcoming_date / reconnect) have no backing task, so those create a real
+    -- follow-up. If a task kind somehow lost its source id, fall back to
+    -- creating one so the convert action is never a silent no-op.
+    IF v_suggestion.suggestion_kind IN ('overdue_task', 'due_task')
+       AND v_suggestion.source_task_id IS NOT NULL THEN
+      v_task_id := v_suggestion.source_task_id;
+      v_task := (
+        SELECT to_jsonb(t.*)
+        FROM public.crm_contact_tasks t
+        WHERE t.id = v_suggestion.source_task_id
+          AND t.deleted_at IS NULL
+      );
+      -- If the source task vanished between read and write, fall through to
+      -- creating a fresh follow-up rather than recording a dangling link.
+      IF v_task IS NULL THEN
+        v_task_id := NULL;
+      ELSE
+        v_linked_task := true;
+      END IF;
+    END IF;
+
+    IF v_task IS NULL THEN
+      v_task := public.crm_add_contact_task(
+        p_contact_id,
+        v_suggestion.suggested_task_title,
+        v_suggestion.summary,
+        'follow_up',
+        'open',
+        v_suggestion.suggested_task_due_at,
+        NULL,
+        CASE WHEN v_suggestion.priority = 'high' THEN 'high' ELSE 'normal' END,
+        'standard',
+        v_actor
+      );
+      v_task_id := NULLIF(v_task->>'id', '')::uuid;
+    END IF;
   END IF;
 
   INSERT INTO public.crm_contact_suggestion_reviews (
@@ -1361,7 +1434,8 @@ BEGIN
       'suggestion_kind', v_suggestion.suggestion_kind,
       'priority', v_suggestion.priority,
       'summary', v_suggestion.summary,
-      'source', 'crm_keep_in_touch_suggestions'
+      'source', 'crm_keep_in_touch_suggestions',
+      'linked_existing_task', v_linked_task
     ),
     v_actor
   )
@@ -1380,7 +1454,8 @@ BEGIN
       'suggestion_key', v_suggestion_key,
       'suggestion_action', v_action,
       'snoozed_until', CASE WHEN v_action = 'snoozed' THEN v_snoozed_until ELSE NULL END,
-      'task_id', v_task_id
+      'task_id', v_task_id,
+      'linked_existing_task', CASE WHEN v_action = 'converted_task' THEN v_linked_task ELSE NULL END
     ))
   );
 
