@@ -184,3 +184,9 @@ select public.crm_set_field_lock('11111111-...'::uuid, 'organization_name', fals
   `crm-person-tiers` schema. This schema keeps a plain `relationship_note`.
 - **Engagement (notes, tasks, interactions) and the MCP tool surface** are
   separate contributions that build on this core.
+
+## More from Nate
+
+Open Brain is built in the open by Nate B. Jones — more practical systems like
+this on his [Substack](https://substack.com/@natesnewsletter) and at
+[natebjones.com](https://natebjones.com).

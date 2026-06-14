@@ -497,6 +497,8 @@ DECLARE
   v_applied_patch JSONB := '{}'::jsonb;
   v_prov_patch JSONB := '{}'::jsonb;
   v_proposal JSONB;
+  v_resolved_proposal public.crm_field_proposals%ROWTYPE;
+  v_bypass_this_key BOOLEAN;
   v_now TIMESTAMPTZ := timezone('utc', now());
   c_known_keys CONSTANT TEXT[] := ARRAY[
     'display_name', 'preferred_name', 'given_name', 'family_name', 'pronouns',
@@ -507,7 +509,13 @@ BEGIN
   IF p_patch IS NULL OR jsonb_typeof(p_patch) <> 'object' THEN
     RAISE EXCEPTION 'p_patch must be a JSON object';
   END IF;
-  IF p_origin NOT IN ('manual', 'import', 'extraction', 'projection') THEN
+  -- 'generated' is only valid as the origin of an accepted proposal: the human
+  -- accept (which sets p_resolved_proposal_id) is the authorization. A direct
+  -- machine write may not claim 'generated'. Without this, a generated-origin
+  -- proposal could never be accepted — the accept path re-enters here passing
+  -- the proposal's origin, and the value would stay forever open.
+  IF p_origin NOT IN ('manual', 'import', 'extraction', 'projection')
+     AND NOT (p_origin = 'generated' AND p_resolved_proposal_id IS NOT NULL) THEN
     RAISE EXCEPTION 'invalid patch origin: %', p_origin;
   END IF;
 
@@ -526,18 +534,22 @@ BEGIN
 
   -- p_resolved_proposal_id is the "manual authority" bypass: it skips
   -- auto-protection so an accepted proposal can apply. Guard it so the bypass
-  -- can only be triggered by a real, still-open proposal on THIS contact —
-  -- a forged, stale, or cross-contact id cannot be used to overwrite a
-  -- protected field. The canonical accept path (crm_resolve_field_proposal)
-  -- always passes a verified open proposal id.
+  -- can only be triggered by a real, still-open contact_field proposal on THIS
+  -- contact — a forged, stale, or cross-contact id cannot be used to overwrite
+  -- a protected field. Load the proposal here; the bypass is then narrowed to
+  -- ONLY the exact field_key/value the proposal proposes (see v_bypass_this_key
+  -- in the per-key loop), so accepting a proposal for field A can never loosen
+  -- protection on field B in the same patch. The canonical accept path
+  -- (crm_resolve_field_proposal) always passes a verified open proposal id.
   IF p_resolved_proposal_id IS NOT NULL THEN
-    IF NOT EXISTS (
-      SELECT 1 FROM public.crm_field_proposals p
-      WHERE p.id = p_resolved_proposal_id
-        AND p.contact_id = v_row.id
-        AND p.status = 'open'
-    ) THEN
-      RAISE EXCEPTION 'crm_invalid_proposal_bypass: % is not an open proposal for contact %', p_resolved_proposal_id, v_row.id;
+    SELECT * INTO v_resolved_proposal
+    FROM public.crm_field_proposals p
+    WHERE p.id = p_resolved_proposal_id
+      AND p.contact_id = v_row.id
+      AND p.status = 'open'
+      AND p.target_kind = 'contact_field';
+    IF v_resolved_proposal.id IS NULL THEN
+      RAISE EXCEPTION 'crm_invalid_proposal_bypass: % is not an open contact_field proposal for contact %', p_resolved_proposal_id, v_row.id;
     END IF;
   END IF;
 
@@ -590,13 +602,25 @@ BEGIN
     v_prev_origin := COALESCE(NULLIF(v_prov->>'origin', ''),
                               CASE WHEN v_cur IS NULL THEN NULL ELSE 'manual' END);
 
-    IF p_resolved_proposal_id IS NULL AND v_locked THEN
+    -- The proposal bypass loosens lock / manual-origin protection for ONLY the
+    -- exact field the proposal is about, and ONLY when the patched value equals
+    -- the proposal's proposed value. Any other key in the same patch is treated
+    -- as a normal (unprivileged) write, so a stale or same-contact proposal for
+    -- field A cannot smuggle an unprotected overwrite of field B (or a different
+    -- value for field A) past auto-protection.
+    v_bypass_this_key := (
+      p_resolved_proposal_id IS NOT NULL
+      AND v_key = v_resolved_proposal.field_key
+      AND v_new IS NOT DISTINCT FROM NULLIF(trim(COALESCE(v_resolved_proposal.proposed_value, '')), '')
+    );
+
+    IF NOT v_bypass_this_key AND v_locked THEN
       -- Locked blocks everyone, including manual bulk edits: unlock first.
       v_conflicts := v_conflicts || v_key;
       CONTINUE;
     END IF;
 
-    IF p_resolved_proposal_id IS NULL
+    IF NOT v_bypass_this_key
        AND p_origin <> 'manual'
        AND v_prev_origin = 'manual' THEN
       -- Auto-protection: a machine writer never overwrites a human value; it
@@ -629,13 +653,13 @@ BEGIN
     -- to propose again). The machine origin that supplied the value is preserved
     -- under 'accepted_origin' for audit. A direct manual edit keeps p_origin.
     v_entry := jsonb_strip_nulls(jsonb_build_object(
-      'origin', CASE WHEN p_resolved_proposal_id IS NOT NULL THEN 'manual' ELSE p_origin END,
-      'accepted_origin', CASE WHEN p_resolved_proposal_id IS NOT NULL THEN p_origin ELSE NULL END,
+      'origin', CASE WHEN v_bypass_this_key THEN 'manual' ELSE p_origin END,
+      'accepted_origin', CASE WHEN v_bypass_this_key THEN p_origin ELSE NULL END,
       'actor', v_actor,
       'run_id', p_run_id,
       'at', v_now,
       'locked', v_locked,
-      'via_proposal', p_resolved_proposal_id
+      'via_proposal', CASE WHEN v_bypass_this_key THEN p_resolved_proposal_id ELSE NULL END
     ));
     v_prov_patch := v_prov_patch || jsonb_build_object(v_key, v_entry);
   END LOOP;
@@ -945,7 +969,6 @@ DECLARE
   v_actor TEXT := COALESCE(NULLIF(trim(p_actor), ''), 'service');
   v_p     public.crm_field_proposals%ROWTYPE;
   v_apply JSONB;
-  v_tid   UUID;
 BEGIN
   IF p_decision NOT IN ('accept', 'reject') THEN
     RAISE EXCEPTION 'decision must be accept or reject';
@@ -1000,14 +1023,17 @@ BEGIN
       decided_by = v_actor
   WHERE id = v_p.id;
 
-  -- Either decision is itself evidence about the field.
-  FOREACH v_tid IN ARRAY COALESCE(v_p.evidence_thought_ids, ARRAY[]::UUID[])
-  LOOP
-    INSERT INTO public.crm_field_evidence (contact_id, target_kind, target_id, field_key, thought_id, role, note, created_by)
-    VALUES (v_p.contact_id, 'proposal', v_p.id, v_p.field_key, v_tid, 'correction',
-            'proposal ' || p_decision || 'ed', v_actor)
-    ON CONFLICT DO NOTHING;
-  END LOOP;
+  -- Either decision is itself evidence about the field. Evidence insertion is
+  -- best-effort: a proposal whose evidence_thought_ids contains a deleted or
+  -- mistyped UUID must not abort the decision. Filter to ids that actually exist
+  -- in thoughts so the crm_field_evidence FK can never fire — the decision is
+  -- recorded and the valid evidence still lands.
+  INSERT INTO public.crm_field_evidence (contact_id, target_kind, target_id, field_key, thought_id, role, note, created_by)
+  SELECT v_p.contact_id, 'proposal', v_p.id, v_p.field_key, t.id, 'correction',
+         'proposal ' || p_decision || 'ed', v_actor
+  FROM unnest(COALESCE(v_p.evidence_thought_ids, ARRAY[]::UUID[])) AS ev(thought_id)
+  JOIN public.thoughts t ON t.id = ev.thought_id
+  ON CONFLICT DO NOTHING;
 
   INSERT INTO public.crm_contact_change_log (contact_id, action, actor_label, changed_fields)
   VALUES (v_p.contact_id, 'proposal.' || p_decision, v_actor,
