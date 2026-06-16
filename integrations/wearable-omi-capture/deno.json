@@ -1,6 +1,7 @@
 {
   "imports": {
-    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.47.10"
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.47.10",
+    "../_shared/wearable-sync.ts": "./_shared/wearable-sync.ts"
   },
   "tasks": {
     "check": "deno check index.ts _shared/wearable-sync.ts",
