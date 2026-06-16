@@ -1,0 +1,20 @@
+{
+  "name": "Omi Wearable Capture",
+  "description": "Poll the Omi pendant's conversations and store them as Open Brain thoughts. Each conversation becomes a meeting thought (title + overview) plus one task per Omi action item, using the device's own structured output — no per-item LLM cost. Built on the wearable-capture-core engine.",
+  "category": "integrations",
+  "author": {
+    "name": "Alan Shurafa",
+    "github": "alanshurafa"
+  },
+  "version": "0.1.0",
+  "requires": {
+    "open_brain": true,
+    "services": ["Omi", "OpenRouter"],
+    "tools": ["Supabase CLI"]
+  },
+  "tags": ["wearable", "omi", "voice", "capture", "poller"],
+  "difficulty": "intermediate",
+  "estimated_time": "20 minutes",
+  "created": "2026-06-16",
+  "updated": "2026-06-16"
+}
