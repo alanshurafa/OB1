@@ -222,6 +222,8 @@ select cron.schedule(
 > capture time. If it's missing, rows still insert but with a NULL embedding for
 > a later backfill.
 
+<!-- -->
+
 > [!NOTE]
 > Replace `YOUR_PROJECT_REF` with your project subdomain. The `sinceHours: 12`
 > lookback in the function means the 5-minute cron has a wide overlap; the
