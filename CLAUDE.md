@@ -91,6 +91,16 @@ DESCRIBE THE EXACT WORK.
 - `.github/PULL_REQUEST_TEMPLATE.md` — PR description template
 - `LICENSE.md` — FSL-1.1-MIT terms
 
+## Fork Notes (alanshurafa/OB1)
+
+This fork is a working copy of [NateBJones-Projects/OB1](https://github.com/NateBJones-Projects/OB1) used to develop and beta-test contributions before they go upstream. When working in this fork:
+
+- `main` tracks upstream `main` plus fork-local docs commits (this Fork Notes section, fork CI fixes) and contributions merged here for beta testing ahead of upstream. Sync from upstream before branching.
+- Develop on `contrib/alanshurafa/<short-description>` branches, matching the upstream branch convention above.
+- Branches are tested via fork PRs into this fork's `main` first; once validated, the same branch is PR'd upstream to `NateBJones-Projects/OB1`. Follow the upstream PR standards (title format, commit prefixes, automated review workflow) exactly.
+- Keep contributions self-contained: no references to private repos, machine-local paths, or credentials. Everything in this fork is public.
+- This section is fork-only; drop it from any diff or PR sent upstream.
+
 ## Local GSD Execution Layer
 
 This repo also has a maintainer-local GSD layer in `.planning/`.
