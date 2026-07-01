@@ -903,6 +903,246 @@ app.patch("/crm/contacts/:id", async (c) => {
   }
 });
 
+const crmResolveSchema = z.object({
+  decision: z.enum(["accept", "reject"]),
+  actor: z.string().optional(),
+});
+
+const crmResolveRunSchema = z.object({
+  run_id: z.string().min(1),
+  decision: z.enum(["accept", "reject"]),
+  actor: z.string().optional(),
+});
+
+const crmEvidenceSchema = z.object({
+  field_key: z.string().min(1),
+  thought_id: z.string().min(1),
+  role: z.enum(["supports", "contradicts", "source", "correction"]).optional(),
+  target_kind: z.enum(["contact_field", "contact_method", "alias", "proposal"]).optional(),
+  target_id: z.string().nullable().optional(),
+  note: z.string().optional(),
+  actor: z.string().optional(),
+});
+
+const crmLockSchema = z.object({
+  field_key: z.string().min(1),
+  locked: z.boolean(),
+  actor: z.string().optional(),
+});
+
+const crmMethodSchema = z.object({
+  method_type: z.enum(["email", "phone", "url", "social", "address", "other"]),
+  value: z.string().min(1),
+  label: z.string().optional(),
+  is_primary: z.boolean().optional(),
+  actor: z.string().optional(),
+  source: z.string().optional(),
+});
+
+async function proposalContactId(proposalId: string): Promise<string | null> {
+  const { data } = await supabase.from("crm_field_proposals").select("contact_id").eq("id", proposalId).single();
+  return (data?.contact_id as string) || null;
+}
+
+app.get("/crm/proposals", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const page = intParam(url.searchParams.get("page"), 1, 1, 100000);
+    const perPage = intParam(url.searchParams.get("per_page"), 25, 1, 100);
+    const offset = (page - 1) * perPage;
+    const status = url.searchParams.get("status") || "open";
+    const contactId = url.searchParams.get("contact_id");
+    const runId = url.searchParams.get("run_id");
+
+    let query = supabase.from("crm_field_proposals").select("*", { count: "exact" });
+    if (status && status !== "all") query = query.eq("status", status);
+    if (contactId) query = query.eq("contact_id", contactId);
+    if (runId) query = query.eq("origin_ref->>run_id", runId);
+
+    const { data, error, count } = await query
+      .order("created_at", { ascending: false })
+      .range(offset, offset + perPage - 1);
+    if (error) throw new Error(error.message);
+    return c.json({ data: data || [], total: count || 0, page, per_page: perPage }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to list proposals" }, 500, corsHeaders);
+  }
+});
+
+app.get("/crm/proposals/count", async (c) => {
+  try {
+    const contactId = new URL(c.req.url).searchParams.get("contact_id");
+    let query = supabase.from("crm_field_proposals").select("id", { count: "exact", head: true }).eq("status", "open");
+    if (contactId) query = query.eq("contact_id", contactId);
+    const { count, error } = await query;
+    if (error) throw new Error(error.message);
+    return c.json({ open: count || 0 }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to count proposals" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/proposals/:id/resolve", async (c) => {
+  try {
+    const parsed = crmResolveSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid resolve payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const proposalId = c.req.param("id");
+    const contactId = await proposalContactId(proposalId);
+    const { data, error } = await supabase.rpc("crm_resolve_field_proposal", {
+      p_proposal_id: proposalId,
+      p_decision: parsed.data.decision,
+      p_actor: parsed.data.actor || "dashboard",
+    });
+    if (error) {
+      const message = error.message || "Resolve failed";
+      if (message.includes("locked")) return c.json({ error: message, code: "field_locked" }, 409, corsHeaders);
+      if (message.includes("not found")) return c.json({ error: message }, 404, corsHeaders);
+      return c.json({ error: message }, 500, corsHeaders);
+    }
+    const result = (data || {}) as { changed?: boolean } & Record<string, unknown>;
+    if (parsed.data.decision === "accept" && result.changed && contactId) {
+      await syncContactCardSafe(contactId, parsed.data.actor || "crm-write-back");
+    }
+    return c.json(result, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Resolve failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/proposals/resolve-run", async (c) => {
+  try {
+    const parsed = crmResolveRunSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid resolve-run payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const { data, error } = await supabase.rpc("crm_resolve_field_proposals_by_run", {
+      p_run_id: parsed.data.run_id,
+      p_decision: parsed.data.decision,
+      p_actor: parsed.data.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, 500, corsHeaders);
+    // Best-effort write-back for every contact touched by an accepted run.
+    if (parsed.data.decision === "accept") {
+      const { data: touched } = await supabase
+        .from("crm_field_proposals")
+        .select("contact_id")
+        .eq("origin_ref->>run_id", parsed.data.run_id)
+        .eq("status", "accepted");
+      const ids = [...new Set((touched || []).map((row) => row.contact_id as string).filter(Boolean))];
+      for (const id of ids) await syncContactCardSafe(id, parsed.data.actor || "crm-write-back");
+    }
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Resolve-run failed" }, 500, corsHeaders);
+  }
+});
+
+app.get("/crm/contacts/:id/field-evidence", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const { data, error } = await supabase.rpc("crm_contact_field_evidence", {
+      p_contact_id: c.req.param("id"),
+      p_field_key: url.searchParams.get("field_key"),
+      p_exclude_restricted: url.searchParams.get("exclude_restricted") !== "false",
+      p_limit: intParam(url.searchParams.get("limit"), 100, 1, 500),
+    });
+    if (error) throw new Error(error.message);
+    return c.json({ evidence: data || [] }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load evidence" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts/:id/field-evidence", async (c) => {
+  try {
+    const parsed = crmEvidenceSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid evidence payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_add_field_evidence", {
+      p_contact_id: c.req.param("id"),
+      p_field_key: body.field_key,
+      p_thought_id: body.thought_id,
+      p_role: body.role || "supports",
+      p_target_kind: body.target_kind || "contact_field",
+      p_target_id: body.target_id ?? null,
+      p_note: body.note ?? null,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, 500, corsHeaders);
+    return c.json({ evidence_id: data }, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Add evidence failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts/:id/field-lock", async (c) => {
+  try {
+    const parsed = crmLockSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid field-lock payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_set_field_lock", {
+      p_contact_id: c.req.param("id"),
+      p_field_key: body.field_key,
+      p_locked: body.locked,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) {
+      const message = error.message || "Field-lock failed";
+      if (message.includes("not found")) return c.json({ error: message }, 404, corsHeaders);
+      if (message.includes("unknown contact field")) return c.json({ error: message }, 400, corsHeaders);
+      return c.json({ error: message }, 500, corsHeaders);
+    }
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Field-lock failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts/:id/methods", async (c) => {
+  try {
+    const parsed = crmMethodSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid method payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const id = c.req.param("id");
+    const { data, error } = await supabase.rpc("crm_add_contact_method", {
+      p_contact_id: id,
+      p_method_type: body.method_type,
+      p_value: body.value,
+      p_label: body.label ?? null,
+      p_is_primary: body.is_primary ?? false,
+      p_actor: body.actor || "dashboard",
+      p_source: body.source || "manual",
+    });
+    if (error) {
+      const message = error.message || "Add method failed";
+      if (message.includes("not found")) return c.json({ error: message }, 404, corsHeaders);
+      if (message.includes("invalid contact method")) return c.json({ error: message }, 400, corsHeaders);
+      return c.json({ error: message }, 500, corsHeaders);
+    }
+    await syncContactCardSafe(id, body.actor || "crm-write-back");
+    return c.json({ method: data }, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Add method failed" }, 500, corsHeaders);
+  }
+});
+
+app.get("/crm/contacts/:id/history", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const page = intParam(url.searchParams.get("page"), 1, 1, 100000);
+    const perPage = intParam(url.searchParams.get("per_page"), 50, 1, 200);
+    const offset = (page - 1) * perPage;
+    const { data, error, count } = await supabase
+      .from("crm_contact_change_log")
+      .select("*", { count: "exact" })
+      .eq("contact_id", c.req.param("id"))
+      .order("created_at", { ascending: false })
+      .range(offset, offset + perPage - 1);
+    if (error) throw new Error(error.message);
+    return c.json({ history: data || [], total: count || 0, page, per_page: perPage }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load history" }, 500, corsHeaders);
+  }
+});
+
 Deno.serve((req) => {
   const url = new URL(req.url);
   if (url.pathname === "/open-brain-rest") {
