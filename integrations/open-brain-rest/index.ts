@@ -1143,6 +1143,339 @@ app.get("/crm/contacts/:id/history", async (c) => {
   }
 });
 
+const PRIVACY_TIERS = ["standard", "sensitive", "restricted"] as const;
+
+const crmNoteSchema = z.object({
+  body: z.string().min(1),
+  note_type: z.enum(["relationship_note", "private_note", "context"]).optional(),
+  pinned: z.boolean().optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  actor: z.string().optional(),
+});
+
+const crmNotePatchSchema = z.object({
+  body: z.string().optional(),
+  note_type: z.enum(["relationship_note", "private_note", "context"]).optional(),
+  pinned: z.boolean().optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  deleted: z.boolean().optional(),
+  actor: z.string().optional(),
+});
+
+const crmTaskSchema = z.object({
+  title: z.string().min(1),
+  description: z.string().optional(),
+  task_type: z.enum(["follow_up", "reminder", "todo"]).optional(),
+  status: z.enum(["open", "completed", "snoozed", "archived"]).optional(),
+  due_at: z.string().nullable().optional(),
+  snoozed_until: z.string().nullable().optional(),
+  priority: z.enum(["low", "normal", "high"]).optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  actor: z.string().optional(),
+});
+
+const crmTaskPatchSchema = z.object({
+  title: z.string().optional(),
+  description: z.string().optional(),
+  task_type: z.enum(["follow_up", "reminder", "todo"]).optional(),
+  status: z.enum(["open", "completed", "snoozed", "archived"]).optional(),
+  due_at: z.string().nullable().optional(),
+  snoozed_until: z.string().nullable().optional(),
+  priority: z.enum(["low", "normal", "high"]).optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  deleted: z.boolean().optional(),
+  actor: z.string().optional(),
+});
+
+const crmDateSchema = z.object({
+  label: z.string().min(1),
+  date_value: z.string().min(1),
+  date_kind: z.enum(["birthday", "anniversary", "work_anniversary", "other"]).optional(),
+  recurrence: z.enum(["none", "annual"]).optional(),
+  notes: z.string().optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  actor: z.string().optional(),
+});
+
+const crmDatePatchSchema = z.object({
+  label: z.string().optional(),
+  date_value: z.string().optional(),
+  date_kind: z.enum(["birthday", "anniversary", "work_anniversary", "other"]).optional(),
+  recurrence: z.enum(["none", "annual"]).optional(),
+  notes: z.string().optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  deleted: z.boolean().optional(),
+  actor: z.string().optional(),
+});
+
+const crmInteractionSchema = z.object({
+  contact_ids: z.array(z.string().min(1)).min(1),
+  kind: z.enum(["call", "meeting", "in_person", "message", "other"]),
+  occurred_at: z.string().min(1),
+  summary: z.string().min(1),
+  duration_minutes: z.number().int().nullable().optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  thought_id: z.string().nullable().optional(),
+  actor: z.string().optional(),
+});
+
+const crmInteractionPatchSchema = z.object({
+  summary: z.string().optional(),
+  occurred_at: z.string().optional(),
+  duration_minutes: z.number().int().nullable().optional(),
+  privacy_tier: z.enum(PRIVACY_TIERS).optional(),
+  deleted: z.boolean().optional(),
+  actor: z.string().optional(),
+});
+
+// Compact error mapper for the engagement RPCs: zod already caught bad input, so
+// the RPC exceptions we still see are "not found" (404) or the occasional guard.
+function crmRpcErrorStatus(message: string): 404 | 409 | 400 | 500 {
+  if (message.includes("not found")) return 404;
+  if (message.includes("locked") || message.includes("stale_write")) return 409;
+  if (/\b(invalid|required|must be|cannot)\b/.test(message)) return 400;
+  return 500;
+}
+
+app.get("/crm/contacts/:id/relationship-items", async (c) => {
+  try {
+    const excludeRestricted = new URL(c.req.url).searchParams.get("exclude_restricted") !== "false";
+    const { data, error } = await supabase.rpc("crm_contact_relationship_items", {
+      p_contact_id: c.req.param("id"),
+      p_exclude_restricted: excludeRestricted,
+    });
+    if (error) throw new Error(error.message);
+    const row = (Array.isArray(data) ? data[0] : data) || { notes: [], tasks: [], important_dates: [] };
+    return c.json(row, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load relationship items" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts/:id/notes", async (c) => {
+  try {
+    const parsed = crmNoteSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid note payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_add_contact_note", {
+      p_contact_id: c.req.param("id"),
+      p_body: body.body,
+      p_note_type: body.note_type || "relationship_note",
+      p_pinned: body.pinned ?? false,
+      p_privacy_tier: body.privacy_tier || "standard",
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json({ note: data }, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Add note failed" }, 500, corsHeaders);
+  }
+});
+
+app.patch("/crm/notes/:noteId", async (c) => {
+  try {
+    const parsed = crmNotePatchSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid note payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_update_contact_note", {
+      p_note_id: c.req.param("noteId"),
+      p_body: body.body ?? null,
+      p_note_type: body.note_type ?? null,
+      p_pinned: body.pinned ?? null,
+      p_privacy_tier: body.privacy_tier ?? null,
+      p_deleted: body.deleted ?? null,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json({ note: data }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Update note failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts/:id/tasks", async (c) => {
+  try {
+    const parsed = crmTaskSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid task payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_add_contact_task", {
+      p_contact_id: c.req.param("id"),
+      p_title: body.title,
+      p_description: body.description ?? null,
+      p_task_type: body.task_type || "follow_up",
+      p_status: body.status || "open",
+      p_due_at: body.due_at ?? null,
+      p_snoozed_until: body.snoozed_until ?? null,
+      p_priority: body.priority || "normal",
+      p_privacy_tier: body.privacy_tier || "standard",
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json({ task: data }, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Add task failed" }, 500, corsHeaders);
+  }
+});
+
+app.patch("/crm/tasks/:taskId", async (c) => {
+  try {
+    const parsed = crmTaskPatchSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid task payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_update_contact_task", {
+      p_task_id: c.req.param("taskId"),
+      p_title: body.title ?? null,
+      p_description: body.description ?? null,
+      p_task_type: body.task_type ?? null,
+      p_status: body.status ?? null,
+      p_due_at: body.due_at ?? null,
+      p_snoozed_until: body.snoozed_until ?? null,
+      p_priority: body.priority ?? null,
+      p_privacy_tier: body.privacy_tier ?? null,
+      p_deleted: body.deleted ?? null,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json({ task: data }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Update task failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts/:id/important-dates", async (c) => {
+  try {
+    const parsed = crmDateSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid date payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_add_contact_important_date", {
+      p_contact_id: c.req.param("id"),
+      p_label: body.label,
+      p_date_value: body.date_value,
+      p_date_kind: body.date_kind || "other",
+      p_recurrence: body.recurrence || "annual",
+      p_notes: body.notes ?? null,
+      p_privacy_tier: body.privacy_tier || "standard",
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json({ important_date: data }, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Add important date failed" }, 500, corsHeaders);
+  }
+});
+
+app.patch("/crm/important-dates/:dateId", async (c) => {
+  try {
+    const parsed = crmDatePatchSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid date payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_update_contact_important_date", {
+      p_important_date_id: c.req.param("dateId"),
+      p_label: body.label ?? null,
+      p_date_value: body.date_value ?? null,
+      p_date_kind: body.date_kind ?? null,
+      p_recurrence: body.recurrence ?? null,
+      p_notes: body.notes ?? null,
+      p_privacy_tier: body.privacy_tier ?? null,
+      p_deleted: body.deleted ?? null,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json({ important_date: data }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Update important date failed" }, 500, corsHeaders);
+  }
+});
+
+app.get("/crm/contacts/:id/interactions", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const { data, error } = await supabase.rpc("crm_contact_interactions", {
+      p_contact_id: c.req.param("id"),
+      p_limit: intParam(url.searchParams.get("limit"), 50, 1, 200),
+      p_offset: intParam(url.searchParams.get("offset"), 0, 0, 100000),
+      p_exclude_restricted: url.searchParams.get("exclude_restricted") !== "false",
+    });
+    if (error) throw new Error(error.message);
+    return c.json({ interactions: data || [] }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load interactions" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/interactions", async (c) => {
+  try {
+    const parsed = crmInteractionSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid interaction payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_log_interaction", {
+      p_contact_ids: body.contact_ids,
+      p_kind: body.kind,
+      p_occurred_at: body.occurred_at,
+      p_summary: body.summary,
+      p_duration_minutes: body.duration_minutes ?? null,
+      p_privacy_tier: body.privacy_tier || "standard",
+      p_thought_id: body.thought_id ?? null,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json(data || {}, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Log interaction failed" }, 500, corsHeaders);
+  }
+});
+
+app.patch("/crm/interactions/:interactionId", async (c) => {
+  try {
+    const parsed = crmInteractionPatchSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid interaction payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const { data, error } = await supabase.rpc("crm_update_interaction", {
+      p_interaction_id: c.req.param("interactionId"),
+      p_summary: body.summary ?? null,
+      p_occurred_at: body.occurred_at ?? null,
+      p_duration_minutes: body.duration_minutes ?? null,
+      p_privacy_tier: body.privacy_tier ?? null,
+      p_deleted: body.deleted ?? null,
+      p_actor: body.actor || "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, crmRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Update interaction failed" }, 500, corsHeaders);
+  }
+});
+
+app.get("/crm/contacts/:id/timeline", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const id = c.req.param("id");
+    const excludeRestricted = url.searchParams.get("exclude_restricted") !== "false";
+    const limit = intParam(url.searchParams.get("limit"), 50, 1, 200);
+
+    const [history, interactions, evidence] = await Promise.all([
+      supabase.from("crm_contact_change_log").select("*").eq("contact_id", id).order("created_at", { ascending: false }).limit(limit),
+      supabase.rpc("crm_contact_interactions", { p_contact_id: id, p_limit: limit, p_offset: 0, p_exclude_restricted: excludeRestricted }),
+      supabase.rpc("crm_contact_field_evidence", { p_contact_id: id, p_field_key: null, p_exclude_restricted: excludeRestricted, p_limit: limit }),
+    ]);
+
+    const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
+    for (const row of (history.data || []) as Array<Record<string, unknown>>) {
+      events.push({ type: "change", at: String(row.created_at ?? ""), data: row });
+    }
+    for (const row of (interactions.data || []) as Array<Record<string, unknown>>) {
+      events.push({ type: "interaction", at: String(row.occurred_at ?? row.created_at ?? ""), data: row });
+    }
+    for (const row of (evidence.data || []) as Array<Record<string, unknown>>) {
+      events.push({ type: "evidence", at: String(row.created_at ?? ""), data: row });
+    }
+    events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    return c.json({ timeline: events.slice(0, limit) }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load timeline" }, 500, corsHeaders);
+  }
+});
+
 Deno.serve((req) => {
   const url = new URL(req.url);
   if (url.pathname === "/open-brain-rest") {
