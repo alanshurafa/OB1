@@ -461,6 +461,153 @@ async function createThought(body: z.infer<typeof captureSchema>) {
   };
 }
 
+// ─── CRM (optional) ─────────────────────────────────────────────────────────
+// Exposes the crm-core / crm-engagement RPCs as REST, and keeps each contact's
+// searchable "card" thought in sync. All routes are already behind the
+// x-brain-key middleware below. Requires the crm-core schema; on a brain
+// without it, these routes surface the RPC's "function does not exist" error
+// and the dashboard hides the section via feature detection.
+
+const crmCreateSchema = z.object({
+  display_name: z.string().min(1),
+  canonical_email: z.string().optional(),
+  organization_name: z.string().optional(),
+  job_title: z.string().optional(),
+  actor: z.string().optional(),
+});
+
+const crmPatchSchema = z.object({
+  patch: z.record(z.string(), z.unknown()),
+  actor: z.string().optional(),
+  origin: z.enum(["manual", "import", "extraction", "projection"]).optional(),
+  run_id: z.string().nullable().optional(),
+  expected_updated_at: z.string().nullable().optional(),
+});
+
+type CrmContactRecord = {
+  id: string;
+  display_name: string;
+  organization_name: string | null;
+  job_title: string | null;
+  location: string | null;
+  relationship_note: string | null;
+  lifecycle_status: string;
+  privacy_tier: string;
+  card_thought_id: string | null;
+  updated_at: string;
+} & Record<string, unknown>;
+
+type CrmContactBundle = {
+  record: CrmContactRecord;
+  methods: Array<Record<string, unknown>>;
+  aliases: Array<Record<string, unknown>>;
+};
+
+// PostgREST `.or()` takes a filter STRING, so raw user input could inject filter
+// structure (commas/parens). Strip the structural characters before building an
+// ilike pattern; the wildcards are added by us.
+function sanitizeIlike(value: string): string {
+  return value.replace(/[,()*:%\\]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+async function crmGetContact(contactId: string): Promise<CrmContactBundle | null> {
+  const { data, error } = await supabase.rpc("crm_get_contact", { p_contact_id: contactId });
+  if (error) throw new Error(error.message);
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { record?: CrmContactRecord; methods?: unknown; aliases?: unknown }
+    | null;
+  if (!row || !row.record) return null;
+  return {
+    record: row.record,
+    methods: Array.isArray(row.methods) ? (row.methods as Array<Record<string, unknown>>) : [],
+    aliases: Array.isArray(row.aliases) ? (row.aliases as Array<Record<string, unknown>>) : [],
+  };
+}
+
+function buildCardContent(record: CrmContactRecord, methods: Array<Record<string, unknown>>): string {
+  const lines = [`Contact: ${record.display_name}`];
+  if (record.organization_name) lines.push(`Organization: ${record.organization_name}`);
+  if (record.job_title) lines.push(`Title: ${record.job_title}`);
+  if (record.location) lines.push(`Location: ${record.location}`);
+  if (record.relationship_note) lines.push(`Note: ${record.relationship_note}`);
+  for (const method of methods) {
+    const type = typeof method.method_type === "string" ? method.method_type : "contact";
+    const value = typeof method.value === "string" ? method.value : "";
+    if (value) lines.push(`${type}: ${value}`);
+  }
+  return lines.join("\n");
+}
+
+// Keep the contact's searchable card thought in sync. The card carries
+// metadata.generated_by='crm-write-back', so entity extraction skips it. Re-embed
+// when a key is present; degrade to a text-searchable (no-embed) card otherwise.
+async function syncContactCard(contactId: string, actor = "crm-write-back"): Promise<string | null> {
+  const contact = await crmGetContact(contactId);
+  if (!contact) return null;
+  const { record, methods } = contact;
+
+  // Archived contacts carry no live card (mirrors the schema's ON DELETE note).
+  if (record.lifecycle_status === "archived") {
+    if (record.card_thought_id) {
+      await supabase.from("crm_contacts").update({ card_thought_id: null }).eq("id", record.id);
+    }
+    return null;
+  }
+
+  const content = buildCardContent(record, methods);
+  const metadata = {
+    source_type: "crm_contact_card",
+    source: "crm_contact_card",
+    generated_by: "crm-write-back",
+    crm_contact_id: record.id,
+    sensitivity_tier: record.privacy_tier,
+  };
+
+  const upsert = await supabase.rpc("upsert_thought", { p_content: content, p_payload: { metadata } });
+  if (upsert.error) throw new Error(upsert.error.message);
+  const thoughtId = String(upsert.data?.id || "");
+  if (!thoughtId) throw new Error("upsert_thought did not return an id");
+
+  // Skip the embed overwrite when upsert resolved via the original-fingerprint
+  // path (the matched row is a corrected thought, not our card text).
+  const matchedViaOriginalFingerprint = upsert.data?.matched_via === "original_fingerprint";
+  const update: Record<string, unknown> = {
+    metadata,
+    source_type: "crm_contact_card",
+    sensitivity_tier: record.privacy_tier,
+  };
+  if (OPENROUTER_API_KEY && !matchedViaOriginalFingerprint) {
+    try {
+      update.embedding = await getEmbedding(content);
+    } catch (error) {
+      // No-embed fallback: the card is still text-searchable; do not fail the write.
+      console.error("crm card embedding skipped:", error instanceof Error ? error.message : error);
+    }
+  }
+  const { error: thoughtError } = await supabase.from("thoughts").update(update).eq("id", thoughtId);
+  if (thoughtError) throw new Error(thoughtError.message);
+
+  if (record.card_thought_id !== thoughtId) {
+    const { error: bindError } = await supabase
+      .from("crm_contacts")
+      .update({ card_thought_id: thoughtId })
+      .eq("id", record.id);
+    if (bindError) throw new Error(bindError.message);
+  }
+  return thoughtId;
+}
+
+// Best-effort wrapper: a write-back failure must never fail the contact write
+// that triggered it.
+async function syncContactCardSafe(contactId: string, actor?: string): Promise<string | null> {
+  try {
+    return await syncContactCard(contactId, actor);
+  } catch (error) {
+    console.error("crm card write-back failed (non-fatal):", error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
 const app = new Hono();
 
 app.options("*", (c) => c.text("ok", 200, corsHeaders));
@@ -647,6 +794,113 @@ app.post("/ingest", async (c) => {
   if (!text) return c.json({ error: "text is required" }, 400, corsHeaders);
   const result = await createThought({ content: text, source_type: "dashboard_ingest" });
   return c.json({ job_id: 0, status: "complete", extracted_count: 1, thought_id: result.thought_id }, 200, corsHeaders);
+});
+
+// ─── CRM routes ─────────────────────────────────────────────────────────────
+
+const CRM_CONTACT_COLUMNS =
+  "id, display_name, canonical_email, organization_name, job_title, location, relationship_note, lifecycle_status, privacy_tier, owner_label, card_thought_id, created_at, updated_at";
+
+app.get("/crm/contacts", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const page = intParam(url.searchParams.get("page"), 1, 1, 100000);
+    const perPage = intParam(url.searchParams.get("per_page"), 25, 1, 100);
+    const offset = (page - 1) * perPage;
+    const q = sanitizeIlike(url.searchParams.get("q") || url.searchParams.get("search") || "");
+    const tier = url.searchParams.get("privacy_tier");
+    const lifecycle = url.searchParams.get("lifecycle_status") || "active";
+    const excludeRestricted = url.searchParams.get("exclude_restricted") !== "false";
+
+    let query = supabase.from("crm_contacts").select(CRM_CONTACT_COLUMNS, { count: "exact" });
+    if (lifecycle && lifecycle !== "all") query = query.eq("lifecycle_status", lifecycle);
+    if (tier) query = query.eq("privacy_tier", tier);
+    if (excludeRestricted) query = query.neq("privacy_tier", "restricted");
+    if (q) {
+      query = query.or(
+        `display_name.ilike.%${q}%,organization_name.ilike.%${q}%,canonical_email.ilike.%${q}%`,
+      );
+    }
+
+    const { data, error, count } = await query
+      .order("display_name", { ascending: true })
+      .range(offset, offset + perPage - 1);
+    if (error) throw new Error(error.message);
+    return c.json({ data: data || [], total: count || 0, page, per_page: perPage }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to list contacts" }, 500, corsHeaders);
+  }
+});
+
+app.post("/crm/contacts", async (c) => {
+  try {
+    const parsed = crmCreateSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid contact payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const actor = body.actor || "dashboard";
+    const { data, error } = await supabase.rpc("crm_create_contact", {
+      p_display_name: body.display_name,
+      p_canonical_email: body.canonical_email ?? null,
+      p_organization_name: body.organization_name ?? null,
+      p_job_title: body.job_title ?? null,
+      p_actor: actor,
+    });
+    if (error) return c.json({ error: error.message }, 500, corsHeaders);
+    const contactId = String(data || "");
+    if (!contactId) return c.json({ error: "crm_create_contact did not return an id" }, 500, corsHeaders);
+    await syncContactCardSafe(contactId, "crm-write-back");
+    const contact = await crmGetContact(contactId);
+    return c.json({ contact_id: contactId, ...(contact || {}) }, 201, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Create failed" }, 500, corsHeaders);
+  }
+});
+
+app.get("/crm/contacts/:id", async (c) => {
+  try {
+    const excludeRestricted = new URL(c.req.url).searchParams.get("exclude_restricted") !== "false";
+    const contact = await crmGetContact(c.req.param("id"));
+    if (!contact) return c.json({ error: "Contact not found" }, 404, corsHeaders);
+    if (excludeRestricted && contact.record.privacy_tier === "restricted") {
+      return c.json({ error: "Restricted contact" }, 403, corsHeaders);
+    }
+    return c.json(contact, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load contact" }, 500, corsHeaders);
+  }
+});
+
+app.patch("/crm/contacts/:id", async (c) => {
+  try {
+    const parsed = crmPatchSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid patch payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const id = c.req.param("id");
+    const { data, error } = await supabase.rpc("crm_patch_contact_record", {
+      p_contact_id: id,
+      p_patch: body.patch,
+      p_actor: body.actor || "dashboard",
+      p_origin: body.origin || "manual",
+      p_run_id: body.run_id ?? null,
+      p_expected_updated_at: body.expected_updated_at ?? null,
+    });
+    if (error) {
+      const message = error.message || "Patch failed";
+      if (message.includes("crm_contact_stale_write")) {
+        return c.json({ error: "The contact changed since you loaded it; reload and retry.", code: "stale_write" }, 409, corsHeaders);
+      }
+      if (message.includes("not found")) return c.json({ error: message }, 404, corsHeaders);
+      return c.json({ error: message }, 500, corsHeaders);
+    }
+    const result = (data || {}) as { applied?: unknown } & Record<string, unknown>;
+    // Refresh the card only when a canonical field actually changed.
+    if (Array.isArray(result.applied) && result.applied.length > 0) {
+      await syncContactCardSafe(id, body.actor || "crm-write-back");
+    }
+    return c.json(result, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Patch failed" }, 500, corsHeaders);
+  }
 });
 
 Deno.serve((req) => {
