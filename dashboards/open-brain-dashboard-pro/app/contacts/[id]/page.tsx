@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
-import { fetchCrmContact, fetchCrmFieldEvidence, fetchCrmProposals, resolveCrmProposal, patchCrmContact, setCrmFieldLock, addCrmMethod, fetchCrmRelationshipItems, addCrmNote, updateCrmNote, addCrmTask, updateCrmTask, addCrmImportantDate, updateCrmImportantDate, fetchCrmTimeline, ApiError } from "@/lib/api";
+import { fetchCrmContact, fetchCrmFieldEvidence, fetchCrmProposals, resolveCrmProposal, patchCrmContact, setCrmFieldLock, addCrmMethod, fetchCrmRelationshipItems, addCrmNote, updateCrmNote, addCrmTask, updateCrmTask, addCrmImportantDate, updateCrmImportantDate, fetchCrmTimeline, fetchCrmHistory, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
 import { EditableFactPanel } from "./EditableFactPanel";
@@ -13,7 +13,7 @@ import type { ResolveResult } from "./ContactProposals";
 import { RelationshipPanel } from "./RelationshipPanel";
 import type { ItemResult } from "./RelationshipPanel";
 import { ContactActivity } from "./ContactActivity";
-import type { CrmContactRecord, CrmEvidence, CrmProposal, CrmRelationshipItems, CrmTimelineEvent } from "@/lib/types";
+import type { CrmContactRecord, CrmEvidence, CrmProposal, CrmRelationshipItems, CrmTimelineEvent, CrmChangeLogEntry } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -482,6 +482,19 @@ export default async function ContactDetailPage({
     }
   }
 
+  // Raw field change log (first page). Optional read; degrades to empty.
+  let history: CrmChangeLogEntry[] = [];
+  try {
+    const res = await fetchCrmHistory(apiKey, id, { per_page: 50 });
+    history = res.history;
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/history] upstream", err.status, err.upstreamBody);
+    } else {
+      console.error("[contact/history]", err);
+    }
+  }
+
   // Editable fields always render (even when empty, so an owner can fill them);
   // read-only fields only render when populated.
   const fieldData: EditableField[] = DISPLAY_FIELDS.map(({ key, label }) => {
@@ -571,7 +584,7 @@ export default async function ContactDetailPage({
       />
 
       {/* Activity (timeline / change log) */}
-      <ContactActivity timeline={timeline} />
+      <ContactActivity timeline={timeline} history={history} />
 
       {/* Aliases */}
       {aliases.length > 0 && (
