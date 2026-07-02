@@ -1,7 +1,10 @@
 import Link from "next/link";
-import { fetchCrmContact, ApiError } from "@/lib/api";
+import { revalidatePath } from "next/cache";
+import { fetchCrmContact, patchCrmContact, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
+import { EditableFactPanel } from "./EditableFactPanel";
+import type { EditResult, EditableField } from "./EditableFactPanel";
 import type { CrmContactRecord } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -19,14 +22,65 @@ const DISPLAY_FIELDS: Array<{ key: keyof CrmContactRecord; label: string }> = [
   { key: "owner_label", label: "Owner" },
 ];
 
-function OriginChip({ origin, locked }: { origin?: string; locked?: boolean }) {
-  if (!origin && !locked) return null;
-  return (
-    <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text-muted">
-      {origin || "manual"}
-      {locked && <span title="Locked" className="text-amber">🔒</span>}
-    </span>
-  );
+// Fields a human owner may edit inline. Everything else (e.g. owner_label) is
+// read-only here. The set also gates the server action so an arbitrary column
+// can never be smuggled into the patch body.
+const EDITABLE_KEYS = new Set<string>([
+  "display_name",
+  "preferred_name",
+  "given_name",
+  "family_name",
+  "pronouns",
+  "job_title",
+  "organization_name",
+  "location",
+  "relationship_note",
+]);
+
+async function editFieldAction(
+  _prev: EditResult,
+  formData: FormData
+): Promise<EditResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const fieldKey = String(formData.get("field_key") || "");
+  const expected = String(formData.get("expected_updated_at") || "") || null;
+  const raw = String(formData.get("value") ?? "").trim();
+  if (!id || !EDITABLE_KEYS.has(fieldKey)) {
+    return { error: "That field can't be edited here." };
+  }
+  // Blank clears the field; the truth layer treats null as "unset".
+  const value = raw === "" ? null : raw;
+
+  try {
+    await patchCrmContact(apiKey, id, {
+      patch: { [fieldKey]: value },
+      actor: "dashboard",
+      origin: "manual",
+      expected_updated_at: expected,
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/edit] upstream", err.status, err.upstreamBody);
+      if (err.status === 409) {
+        return {
+          stale: true,
+          error:
+            "This contact changed since you loaded it. Reload to pull the latest values, then edit again.",
+        };
+      }
+      if (err.status === 403) {
+        return { error: "This field is locked or restricted." };
+      }
+      return { error: err.message };
+    }
+    console.error("[contact/edit]", err);
+    return { error: "Failed to save." };
+  }
+
+  revalidatePath(`/contacts/${id}`);
+  return { ok: true };
 }
 
 export default async function ContactDetailPage({
@@ -78,6 +132,22 @@ export default async function ContactDetailPage({
   const { record, methods, aliases } = bundle;
   const provenance = record.field_provenance || {};
 
+  // Editable fields always render (even when empty, so an owner can fill them);
+  // read-only fields only render when populated.
+  const fieldData: EditableField[] = DISPLAY_FIELDS.map(({ key, label }) => {
+    const raw = record[key];
+    const value = raw === null || raw === undefined ? "" : String(raw);
+    const prov = provenance[key as string];
+    return {
+      key: String(key),
+      label,
+      value,
+      origin: prov?.origin,
+      locked: prov?.locked,
+      editable: EDITABLE_KEYS.has(key as string),
+    };
+  }).filter((f) => f.editable || f.value !== "");
+
   return (
     <div className="space-y-6">
       <div>
@@ -96,28 +166,12 @@ export default async function ContactDetailPage({
       </div>
 
       {/* Fact panel */}
-      <section className="bg-bg-surface border border-border rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-semibold text-text-primary">Fields</h2>
-          <p className="text-text-muted text-xs">Each field shows its origin; a lock blocks all writes until unlocked.</p>
-        </div>
-        <dl className="divide-y divide-border-subtle">
-          {DISPLAY_FIELDS.map(({ key, label }) => {
-            const value = record[key];
-            if (value === null || value === undefined || value === "") return null;
-            const prov = provenance[key as string];
-            return (
-              <div key={String(key)} className="px-4 py-3 flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <dt className="text-text-muted text-xs uppercase tracking-wider">{label}</dt>
-                  <dd className="text-text-primary text-sm mt-0.5 break-words">{String(value)}</dd>
-                </div>
-                <OriginChip origin={prov?.origin} locked={prov?.locked} />
-              </div>
-            );
-          })}
-        </dl>
-      </section>
+      <EditableFactPanel
+        contactId={record.id}
+        updatedAt={record.updated_at}
+        fields={fieldData}
+        action={editFieldAction}
+      />
 
       {/* Methods */}
       <section className="bg-bg-surface border border-border rounded-lg overflow-hidden">
