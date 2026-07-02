@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
-import { fetchCrmContact, fetchCrmFieldEvidence, fetchCrmProposals, resolveCrmProposal, patchCrmContact, setCrmFieldLock, addCrmMethod, ApiError } from "@/lib/api";
+import { fetchCrmContact, fetchCrmFieldEvidence, fetchCrmProposals, resolveCrmProposal, patchCrmContact, setCrmFieldLock, addCrmMethod, fetchCrmRelationshipItems, addCrmNote, updateCrmNote, addCrmTask, updateCrmTask, addCrmImportantDate, updateCrmImportantDate, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
 import { EditableFactPanel } from "./EditableFactPanel";
@@ -10,7 +10,9 @@ import type { AddMethodResult } from "./AddMethodForm";
 import { FieldEvidence } from "./FieldEvidence";
 import { ContactProposals } from "./ContactProposals";
 import type { ResolveResult } from "./ContactProposals";
-import type { CrmContactRecord, CrmEvidence, CrmProposal } from "@/lib/types";
+import { RelationshipPanel } from "./RelationshipPanel";
+import type { ItemResult } from "./RelationshipPanel";
+import type { CrmContactRecord, CrmEvidence, CrmProposal, CrmRelationshipItems } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -213,6 +215,157 @@ async function resolveProposalAction(
   return { ok: true };
 }
 
+// Shared error handling for the relationship-item actions (notes/tasks/dates):
+// log the upstream body server-side, surface only a short message to the client.
+function relationshipItemError(scope: string, err: unknown): ItemResult {
+  if (err instanceof ApiError) {
+    console.error(`[contact/${scope}] upstream`, err.status, err.upstreamBody);
+    if (err.status === 403) return { error: "You can't change this contact." };
+    if (err.status === 404) return { error: "That item no longer exists. Reload to refresh." };
+    return { error: err.message };
+  }
+  console.error(`[contact/${scope}]`, err);
+  return { error: "Something went wrong. Try again." };
+}
+
+async function addNoteAction(_prev: ItemResult, formData: FormData): Promise<ItemResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const body = String(formData.get("body") ?? "").trim();
+  const noteType = String(formData.get("note_type") || "").trim();
+  const pinned = String(formData.get("pinned") || "") === "true";
+  if (!id) return { error: "Missing contact." };
+  if (!body) return { error: "Enter a note." };
+
+  try {
+    await addCrmNote(apiKey, id, {
+      body,
+      note_type: noteType || undefined,
+      pinned,
+      actor: "dashboard",
+    });
+  } catch (err) {
+    return relationshipItemError("add-note", err);
+  }
+
+  revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
+async function pinNoteAction(_prev: ItemResult, formData: FormData): Promise<ItemResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const noteId = String(formData.get("note_id") || "");
+  const pinned = String(formData.get("pinned") || "") === "true";
+  if (!noteId) return { error: "Missing note." };
+
+  try {
+    await updateCrmNote(apiKey, noteId, { pinned, actor: "dashboard" });
+  } catch (err) {
+    return relationshipItemError("pin-note", err);
+  }
+
+  if (id) revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
+async function addTaskAction(_prev: ItemResult, formData: FormData): Promise<ItemResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const title = String(formData.get("title") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim();
+  const taskType = String(formData.get("task_type") || "").trim();
+  const priority = String(formData.get("priority") || "").trim();
+  // datetime-local yields "YYYY-MM-DDTHH:MM"; pass through as-is, blank clears.
+  const dueAt = String(formData.get("due_at") || "").trim();
+  if (!id) return { error: "Missing contact." };
+  if (!title) return { error: "Enter a title." };
+
+  try {
+    await addCrmTask(apiKey, id, {
+      title,
+      description: description || undefined,
+      task_type: taskType || undefined,
+      priority: priority || undefined,
+      due_at: dueAt || undefined,
+      actor: "dashboard",
+    });
+  } catch (err) {
+    return relationshipItemError("add-task", err);
+  }
+
+  revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
+async function setTaskStatusAction(_prev: ItemResult, formData: FormData): Promise<ItemResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const taskId = String(formData.get("task_id") || "");
+  const status = String(formData.get("status") || "");
+  if (!taskId || (status !== "open" && status !== "completed")) {
+    return { error: "That change can't be recorded." };
+  }
+
+  try {
+    await updateCrmTask(apiKey, taskId, { status, actor: "dashboard" });
+  } catch (err) {
+    return relationshipItemError("set-task-status", err);
+  }
+
+  if (id) revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
+async function addDateAction(_prev: ItemResult, formData: FormData): Promise<ItemResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const label = String(formData.get("label") ?? "").trim();
+  const dateValue = String(formData.get("date_value") || "").trim();
+  const dateKind = String(formData.get("date_kind") || "").trim();
+  const recurrence = String(formData.get("recurrence_annual") || "") === "true" ? "annual" : "none";
+  if (!id) return { error: "Missing contact." };
+  if (!label) return { error: "Enter a label." };
+  if (!dateValue) return { error: "Pick a date." };
+
+  try {
+    await addCrmImportantDate(apiKey, id, {
+      label,
+      date_value: dateValue,
+      date_kind: dateKind || undefined,
+      recurrence,
+      actor: "dashboard",
+    });
+  } catch (err) {
+    return relationshipItemError("add-date", err);
+  }
+
+  revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
+async function removeDateAction(_prev: ItemResult, formData: FormData): Promise<ItemResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const dateId = String(formData.get("date_id") || "");
+  if (!dateId) return { error: "Missing date." };
+
+  try {
+    await updateCrmImportantDate(apiKey, dateId, { deleted: true, actor: "dashboard" });
+  } catch (err) {
+    return relationshipItemError("remove-date", err);
+  }
+
+  if (id) revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
 export default async function ContactDetailPage({
   params,
 }: {
@@ -301,6 +454,19 @@ export default async function ContactDetailPage({
     }
   }
 
+  // Notes / tasks / important dates from the CRM engagement layer. Optional, so
+  // a brain without the route degrades to an empty (add-only) panel.
+  let relationshipItems: CrmRelationshipItems = { notes: [], tasks: [], important_dates: [] };
+  try {
+    relationshipItems = await fetchCrmRelationshipItems(apiKey, id, excludeRestricted);
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/relationship-items] upstream", err.status, err.upstreamBody);
+    } else {
+      console.error("[contact/relationship-items]", err);
+    }
+  }
+
   // Editable fields always render (even when empty, so an owner can fill them);
   // read-only fields only render when populated.
   const fieldData: EditableField[] = DISPLAY_FIELDS.map(({ key, label }) => {
@@ -374,6 +540,20 @@ export default async function ContactDetailPage({
         )}
         <AddMethodForm contactId={record.id} action={addMethodAction} />
       </section>
+
+      {/* Notes, tasks & important dates */}
+      <RelationshipPanel
+        contactId={record.id}
+        notes={relationshipItems.notes}
+        tasks={relationshipItems.tasks}
+        importantDates={relationshipItems.important_dates}
+        addNote={addNoteAction}
+        pinNote={pinNoteAction}
+        addTask={addTaskAction}
+        setTaskStatus={setTaskStatusAction}
+        addDate={addDateAction}
+        removeDate={removeDateAction}
+      />
 
       {/* Aliases */}
       {aliases.length > 0 && (
