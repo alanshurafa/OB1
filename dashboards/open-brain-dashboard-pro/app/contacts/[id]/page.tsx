@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
-import { fetchCrmContact, patchCrmContact, setCrmFieldLock, addCrmMethod, ApiError } from "@/lib/api";
+import { fetchCrmContact, fetchCrmFieldEvidence, patchCrmContact, setCrmFieldLock, addCrmMethod, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
 import { EditableFactPanel } from "./EditableFactPanel";
 import type { EditResult, EditableField } from "./EditableFactPanel";
 import { AddMethodForm } from "./AddMethodForm";
 import type { AddMethodResult } from "./AddMethodForm";
-import type { CrmContactRecord } from "@/lib/types";
+import { FieldEvidence } from "./FieldEvidence";
+import type { CrmContactRecord, CrmEvidence } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -217,6 +218,26 @@ export default async function ContactDetailPage({
   const { record, methods, aliases } = bundle;
   const provenance = record.field_provenance || {};
 
+  // Field evidence is a separate, optional read: an older brain may not expose
+  // the route, so a failure here degrades to an empty panel rather than blanking
+  // the whole contact page.
+  let evidence: CrmEvidence[] = [];
+  try {
+    const res = await fetchCrmFieldEvidence(apiKey, id, {
+      exclude_restricted: excludeRestricted,
+    });
+    evidence = res.evidence;
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/evidence] upstream", err.status, err.upstreamBody);
+    } else {
+      console.error("[contact/evidence]", err);
+    }
+  }
+  const fieldLabels: Record<string, string> = Object.fromEntries(
+    DISPLAY_FIELDS.map(({ key, label }) => [String(key), label])
+  );
+
   // Editable fields always render (even when empty, so an owner can fill them);
   // read-only fields only render when populated.
   const fieldData: EditableField[] = DISPLAY_FIELDS.map(({ key, label }) => {
@@ -258,6 +279,9 @@ export default async function ContactDetailPage({
         action={editFieldAction}
         lockAction={lockFieldAction}
       />
+
+      {/* Field evidence */}
+      <FieldEvidence evidence={evidence} labels={fieldLabels} />
 
       {/* Methods */}
       <section className="bg-bg-surface border border-border rounded-lg overflow-hidden">
