@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
-import { fetchCrmContact, patchCrmContact, setCrmFieldLock, ApiError } from "@/lib/api";
+import { fetchCrmContact, patchCrmContact, setCrmFieldLock, addCrmMethod, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
 import { EditableFactPanel } from "./EditableFactPanel";
 import type { EditResult, EditableField } from "./EditableFactPanel";
+import { AddMethodForm } from "./AddMethodForm";
+import type { AddMethodResult } from "./AddMethodForm";
 import type { CrmContactRecord } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -119,6 +121,53 @@ async function lockFieldAction(
   return { ok: true };
 }
 
+async function addMethodAction(
+  _prev: AddMethodResult,
+  formData: FormData
+): Promise<AddMethodResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const rawType = String(formData.get("method_type") || "").trim();
+  const customType = String(formData.get("method_type_custom") || "").trim();
+  const methodType = rawType === "other" ? customType : rawType;
+  const value = String(formData.get("value") ?? "").trim();
+  const label = String(formData.get("label") ?? "").trim();
+  const isPrimary = String(formData.get("is_primary") || "") === "true";
+  if (!id) {
+    return { error: "Missing contact." };
+  }
+  if (!methodType) {
+    return { error: "Pick or name a method type." };
+  }
+  if (!value) {
+    return { error: "Enter a value." };
+  }
+
+  try {
+    await addCrmMethod(apiKey, id, {
+      method_type: methodType,
+      value,
+      label: label || undefined,
+      is_primary: isPrimary,
+      actor: "dashboard",
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/add-method] upstream", err.status, err.upstreamBody);
+      if (err.status === 403) {
+        return { error: "You can't add a method to this contact." };
+      }
+      return { error: err.message };
+    }
+    console.error("[contact/add-method]", err);
+    return { error: "Failed to add the method." };
+  }
+
+  revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
 export default async function ContactDetailPage({
   params,
 }: {
@@ -223,11 +272,13 @@ export default async function ContactDetailPage({
               <li key={method.id} className="px-4 py-3 flex items-center gap-3 text-sm">
                 <span className="text-text-muted text-xs uppercase tracking-wider w-16">{method.method_type}</span>
                 <span className="text-text-primary flex-1 break-words">{method.value}</span>
+                {method.label && <span className="text-xs text-text-muted">{method.label}</span>}
                 {method.is_primary && <span className="text-xs text-violet">primary</span>}
               </li>
             ))}
           </ul>
         )}
+        <AddMethodForm contactId={record.id} action={addMethodAction} />
       </section>
 
       {/* Aliases */}
