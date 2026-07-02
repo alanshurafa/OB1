@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
-import { fetchCrmContact, fetchCrmFieldEvidence, patchCrmContact, setCrmFieldLock, addCrmMethod, ApiError } from "@/lib/api";
+import { fetchCrmContact, fetchCrmFieldEvidence, fetchCrmProposals, resolveCrmProposal, patchCrmContact, setCrmFieldLock, addCrmMethod, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
 import { EditableFactPanel } from "./EditableFactPanel";
@@ -8,7 +8,9 @@ import type { EditResult, EditableField } from "./EditableFactPanel";
 import { AddMethodForm } from "./AddMethodForm";
 import type { AddMethodResult } from "./AddMethodForm";
 import { FieldEvidence } from "./FieldEvidence";
-import type { CrmContactRecord, CrmEvidence } from "@/lib/types";
+import { ContactProposals } from "./ContactProposals";
+import type { ResolveResult } from "./ContactProposals";
+import type { CrmContactRecord, CrmEvidence, CrmProposal } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -169,6 +171,48 @@ async function addMethodAction(
   return { ok: true };
 }
 
+async function resolveProposalAction(
+  _prev: ResolveResult,
+  formData: FormData
+): Promise<ResolveResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const contactId = String(formData.get("contact_id") || "");
+  const proposalId = String(formData.get("proposal_id") || "");
+  const decision = String(formData.get("decision") || "");
+  if (!proposalId || (decision !== "accept" && decision !== "reject")) {
+    return { error: "That decision can't be recorded." };
+  }
+
+  try {
+    await resolveCrmProposal(apiKey, proposalId, {
+      decision,
+      actor: "dashboard",
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/resolve-proposal] upstream", err.status, err.upstreamBody);
+      if (err.status === 409) {
+        return { error: "This proposal was already decided. Reload to refresh." };
+      }
+      if (err.status === 403) {
+        return { error: "You can't decide this proposal." };
+      }
+      if (err.status === 404) {
+        return { error: "This proposal no longer exists. Reload to refresh." };
+      }
+      return { error: err.message };
+    }
+    console.error("[contact/resolve-proposal]", err);
+    return { error: "Failed to record the decision." };
+  }
+
+  if (contactId) {
+    revalidatePath(`/contacts/${contactId}`);
+  }
+  return { ok: true };
+}
+
 export default async function ContactDetailPage({
   params,
 }: {
@@ -238,6 +282,25 @@ export default async function ContactDetailPage({
     DISPLAY_FIELDS.map(({ key, label }) => [String(key), label])
   );
 
+  // Open proposals for this contact are another optional read: brains without the
+  // CRM engagement layer won't expose the route, so a failure degrades to an empty
+  // (hidden) section rather than blanking the page.
+  let proposals: CrmProposal[] = [];
+  try {
+    const res = await fetchCrmProposals(apiKey, {
+      contact_id: id,
+      status: "open",
+      per_page: 50,
+    });
+    proposals = res.data;
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/proposals] upstream", err.status, err.upstreamBody);
+    } else {
+      console.error("[contact/proposals]", err);
+    }
+  }
+
   // Editable fields always render (even when empty, so an owner can fill them);
   // read-only fields only render when populated.
   const fieldData: EditableField[] = DISPLAY_FIELDS.map(({ key, label }) => {
@@ -282,6 +345,13 @@ export default async function ContactDetailPage({
 
       {/* Field evidence */}
       <FieldEvidence evidence={evidence} labels={fieldLabels} />
+
+      {/* Open proposals */}
+      <ContactProposals
+        contactId={record.id}
+        proposals={proposals}
+        action={resolveProposalAction}
+      />
 
       {/* Methods */}
       <section className="bg-bg-surface border border-border rounded-lg overflow-hidden">
