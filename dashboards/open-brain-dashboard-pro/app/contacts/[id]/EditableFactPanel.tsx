@@ -32,11 +32,13 @@ export function EditableFactPanel({
   updatedAt,
   fields,
   action,
+  lockAction,
 }: {
   contactId: string;
   updatedAt: string;
   fields: EditableField[];
   action: (prev: EditResult, formData: FormData) => Promise<EditResult>;
+  lockAction: (prev: EditResult, formData: FormData) => Promise<EditResult>;
 }) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   // Close the editor as part of the action transition when the save succeeds;
@@ -50,8 +52,16 @@ export function EditableFactPanel({
     },
     undefined
   );
+  // Locking has its own transition so a lock error surfaces independently of
+  // an in-flight field edit. The route revalidates on success, refreshing the
+  // lock chip and flipping the toggle label.
+  const [lockState, lockFormAction, lockPending] = useActionState(
+    lockAction,
+    undefined
+  );
 
   const stale = !!(state && "stale" in state && state.stale);
+  const lockError = lockState && "error" in lockState ? lockState.error : null;
 
   return (
     <section className="bg-bg-surface border border-border rounded-lg overflow-hidden">
@@ -61,6 +71,12 @@ export function EditableFactPanel({
           Each field shows its origin; a lock blocks all writes until unlocked. Manual edits win over machine writers.
         </p>
       </div>
+
+      {lockError && (
+        <div className="px-4 py-2 border-b border-border bg-bg-elevated">
+          <p className="text-danger text-sm">{lockError}</p>
+        </div>
+      )}
 
       {stale && (
         <div className="px-4 py-3 border-b border-border bg-bg-elevated flex items-center justify-between gap-3">
@@ -103,6 +119,29 @@ export function EditableFactPanel({
                     >
                       Edit
                     </button>
+                  )}
+                  {field.editable && !editing && (
+                    <form action={lockFormAction} className="contents">
+                      <input type="hidden" name="id" value={contactId} />
+                      <input type="hidden" name="field_key" value={field.key} />
+                      <input
+                        type="hidden"
+                        name="locked"
+                        value={field.locked ? "false" : "true"}
+                      />
+                      <button
+                        type="submit"
+                        disabled={lockPending}
+                        className="text-xs text-text-muted hover:text-violet transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={
+                          field.locked
+                            ? "Unlock this field so it can be edited or written by agents"
+                            : "Lock this field to block all writes until unlocked"
+                        }
+                      >
+                        {field.locked ? "Unlock" : "Lock"}
+                      </button>
+                    </form>
                   )}
                 </div>
               </div>

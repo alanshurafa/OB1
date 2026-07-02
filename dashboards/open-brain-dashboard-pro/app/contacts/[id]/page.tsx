@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
-import { fetchCrmContact, patchCrmContact, ApiError } from "@/lib/api";
+import { fetchCrmContact, patchCrmContact, setCrmFieldLock, ApiError } from "@/lib/api";
 import { requireSessionOrRedirect, getSession } from "@/lib/auth";
 import { FormattedDate } from "@/components/FormattedDate";
 import { EditableFactPanel } from "./EditableFactPanel";
@@ -77,6 +77,42 @@ async function editFieldAction(
     }
     console.error("[contact/edit]", err);
     return { error: "Failed to save." };
+  }
+
+  revalidatePath(`/contacts/${id}`);
+  return { ok: true };
+}
+
+async function lockFieldAction(
+  _prev: EditResult,
+  formData: FormData
+): Promise<EditResult> {
+  "use server";
+  const { apiKey } = await requireSessionOrRedirect();
+  const id = String(formData.get("id") || "");
+  const fieldKey = String(formData.get("field_key") || "");
+  // The form sends the desired next state, computed from the current lock.
+  const locked = String(formData.get("locked") || "") === "true";
+  if (!id || !EDITABLE_KEYS.has(fieldKey)) {
+    return { error: "That field can't be locked here." };
+  }
+
+  try {
+    await setCrmFieldLock(apiKey, id, {
+      field_key: fieldKey,
+      locked,
+      actor: "dashboard",
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      console.error("[contact/lock] upstream", err.status, err.upstreamBody);
+      if (err.status === 403) {
+        return { error: "You can't change the lock on this field." };
+      }
+      return { error: err.message };
+    }
+    console.error("[contact/lock]", err);
+    return { error: "Failed to update the lock." };
   }
 
   revalidatePath(`/contacts/${id}`);
@@ -171,6 +207,7 @@ export default async function ContactDetailPage({
         updatedAt={record.updated_at}
         fields={fieldData}
         action={editFieldAction}
+        lockAction={lockFieldAction}
       />
 
       {/* Methods */}
