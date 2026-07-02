@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/Sidebar";
 import { getSession } from "@/lib/auth";
+import { fetchCrmProposalsCount, ApiError } from "@/lib/api";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,13 +37,30 @@ export default async function RootLayout({
   const session = await getSession();
   const crmEnabled = session.crmEnabled === true;
 
+  // Open-proposals badge: a best-effort read that never blocks the shell. An
+  // older brain without the count route (or any transient error) degrades to no
+  // badge rather than failing the layout.
+  let openProposals = 0;
+  if (crmEnabled && session.apiKey) {
+    try {
+      const res = await fetchCrmProposalsCount(session.apiKey);
+      openProposals = res.open;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        console.error("[layout/proposals-count] upstream", err.status, err.upstreamBody);
+      } else {
+        console.error("[layout/proposals-count]", err);
+      }
+    }
+  }
+
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-screen flex bg-bg-primary text-text-primary">
-        <Sidebar restrictedConfigured={restrictedConfigured} crmEnabled={crmEnabled} />
+        <Sidebar restrictedConfigured={restrictedConfigured} crmEnabled={crmEnabled} openProposals={openProposals} />
         <main className="flex-1 ml-56 min-h-screen">
           <div className="max-w-6xl mx-auto px-8 py-8">
             {children}

@@ -9,6 +9,8 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ active: boolean }>;
   isActive?: (pathname: string) => boolean;
+  /** Optional count pill rendered at the trailing edge of the entry. */
+  badge?: number;
 }
 
 const nav: NavItem[] = [
@@ -24,9 +26,11 @@ const nav: NavItem[] = [
 export function Sidebar({
   restrictedConfigured = false,
   crmEnabled = false,
+  openProposals = 0,
 }: {
   restrictedConfigured?: boolean;
   crmEnabled?: boolean;
+  openProposals?: number;
 }) {
   const pathname = usePathname();
 
@@ -40,7 +44,7 @@ export function Sidebar({
   if (crmEnabled) {
     items.splice(2, 0,
       { href: "/contacts", label: "Contacts", icon: ContactsIcon },
-      { href: "/proposals", label: "Proposals", icon: ProposalsIcon },
+      { href: "/proposals", label: "Proposals", icon: ProposalsIcon, badge: openProposals },
     );
   }
 
@@ -58,8 +62,8 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">
-        {nav.map((entry) => {
-          const { href, label, icon: Icon, isActive: isActiveFn } = entry;
+        {items.map((entry) => {
+          const { href, label, icon: Icon, isActive: isActiveFn, badge } = entry;
           const active = isActiveFn
             ? isActiveFn(pathname)
             : href === "/"
@@ -77,6 +81,11 @@ export function Sidebar({
             >
               <Icon active={active} />
               {label}
+              {badge !== undefined && badge > 0 && (
+                <span className="ml-auto text-xs font-semibold px-1.5 py-0.5 rounded-full bg-violet text-white min-w-[1.25rem] text-center">
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
             </Link>
           );
         })}
