@@ -1508,14 +1508,26 @@ const wikiLockSchema = z.object({
   locked: z.boolean(),
 });
 
-// Compact error mapper for the wiki RPCs/tables, modeled on crmRpcErrorStatus.
-// ADDITIONALLY handles the "schema not installed" case: on a brain without the
-// wiki-pages schema, RPC calls fail with "function ... does not exist" and the
-// direct-table list query fails with "relation ... does not exist" — both map
-// to a clean 404 so GET /wiki/pages?per_page=1 works as a feature-detect probe
-// (same philosophy as crmAvailable()).
-function wikiRpcErrorStatus(message: string): 404 | 409 | 400 | 500 {
+// Compact error mapper for the wiki RPCs/tables, modeled on crmRpcErrorStatus
+// but fed the whole PostgrestError (message + code), not just a message string.
+// ADDITIONALLY handles the "schema not installed" case: supabase-js does not
+// surface raw Postgres "... does not exist" text for a missing schema —
+// PostgREST reports a missing table as PGRST205 and a missing function as
+// PGRST202 ("Could not find the table/function ... in the schema cache"),
+// while raw Postgres uses SQLSTATE 42P01 (undefined_table) / 42883
+// (undefined_function). All of those map to a clean 404 so
+// GET /wiki/pages?per_page=1 works as a feature-detect probe on a brain
+// without the wiki-pages schema (same philosophy as crmAvailable(); same
+// PGRST205/42P01 shapes handled by recipes/brain-backup and
+// recipes/crm-quick-start).
+const WIKI_MISSING_SCHEMA_CODES = new Set(["PGRST202", "PGRST205", "42P01", "42883"]);
+
+function wikiRpcErrorStatus(error: { message?: string | null; code?: string | null } | null | undefined): 404 | 409 | 400 | 500 {
+  const code = error?.code || "";
+  const message = error?.message || "";
   if (
+    WIKI_MISSING_SCHEMA_CODES.has(code) ||
+    /could not find the (table|function)/i.test(message) ||
     message.includes("does not exist") ||
     message.includes("not found")
   ) {
@@ -1546,7 +1558,10 @@ app.get("/wiki/pages", async (c) => {
     const { data, error, count } = await query
       .order("updated_at", { ascending: false })
       .range(offset, offset + perPage - 1);
-    if (error) throw new Error(error.message);
+    // Map query errors here (not via throw/catch) so the PostgrestError's code
+    // field reaches wikiRpcErrorStatus intact — the feature-detect 404 depends
+    // on it.
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
 
     const rows = data || [];
     // Grouped section count over just this page's ids — one follow-up query,
@@ -1559,7 +1574,7 @@ app.get("/wiki/pages", async (c) => {
         .select("page_id")
         .in("page_id", pageIds)
         .is("deleted_at", null);
-      if (sectionError) throw new Error(sectionError.message);
+      if (sectionError) return c.json({ error: sectionError.message }, wikiRpcErrorStatus(sectionError), corsHeaders);
       for (const row of (sectionRows || []) as Array<{ page_id: string }>) {
         sectionCounts[row.page_id] = (sectionCounts[row.page_id] || 0) + 1;
       }
@@ -1572,7 +1587,7 @@ app.get("/wiki/pages", async (c) => {
 
     return c.json({ data: withCounts, total: count || 0, page, per_page: perPage }, 200, corsHeaders);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "Failed to list wiki pages" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+    return c.json({ error: error instanceof Error ? error.message : "Failed to list wiki pages" }, 500, corsHeaders);
   }
 });
 
@@ -1585,15 +1600,22 @@ app.post("/wiki/pages", async (c) => {
     const title = body.title.trim();
     if (!slug) return c.json({ error: "slug is required" }, 400, corsHeaders);
     if (!title) return c.json({ error: "title is required" }, 400, corsHeaders);
+    // Same allowlist the GET filter validates against: reject a bogus
+    // page_kind with a 400 here instead of letting the wiki_pages CHECK
+    // constraint turn it into a 500.
+    const pageKind = body.page_kind || "topic";
+    if (!WIKI_PAGE_KINDS.includes(pageKind as (typeof WIKI_PAGE_KINDS)[number])) {
+      return c.json({ error: `Invalid page_kind. Must be one of: ${WIKI_PAGE_KINDS.join(", ")}` }, 400, corsHeaders);
+    }
 
     const { data, error } = await supabase.rpc("wiki_upsert_page", {
       p_slug: slug,
       p_title: title,
-      p_page_kind: body.page_kind || "topic",
+      p_page_kind: pageKind,
       p_metadata: body.metadata || {},
       p_actor: "dashboard",
     });
-    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
     return c.json(data || {}, 200, corsHeaders);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Create page failed" }, 500, corsHeaders);
@@ -1611,7 +1633,7 @@ app.get("/wiki/pages/:slug", async (c) => {
       .select(WIKI_PAGE_COLUMNS)
       .eq("slug", slug)
       .maybeSingle();
-    if (pageError) throw new Error(pageError.message);
+    if (pageError) return c.json({ error: pageError.message }, wikiRpcErrorStatus(pageError), corsHeaders);
     if (!page) return c.json({ error: `Wiki page '${slug}' not found.` }, 404, corsHeaders);
 
     const { data: sections, error: sectionError } = await supabase
@@ -1621,11 +1643,11 @@ app.get("/wiki/pages/:slug", async (c) => {
       .is("deleted_at", null)
       .order("display_order", { ascending: true })
       .order("section_key", { ascending: true });
-    if (sectionError) throw new Error(sectionError.message);
+    if (sectionError) return c.json({ error: sectionError.message }, wikiRpcErrorStatus(sectionError), corsHeaders);
 
     return c.json({ page, sections: sections || [] }, 200, corsHeaders);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "Failed to load wiki page" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load wiki page" }, 500, corsHeaders);
   }
 });
 
@@ -1636,13 +1658,16 @@ app.put("/wiki/pages/:slug/sections/:sectionKey", async (c) => {
     const body = parsed.data;
 
     const slug = c.req.param("slug");
+    // Intentionally no status filter — mirrors wiki-mcp's wiki_write_section
+    // tool (which writes by page_id with no page-status check) and the RPC
+    // itself. A section on an archived page stays editable by slug, the same
+    // way the page stays readable via GET /wiki/pages/:slug.
     const { data: page, error: pageError } = await supabase
       .from("wiki_pages")
       .select("id")
       .eq("slug", slug)
-      .eq("status", "active")
       .maybeSingle();
-    if (pageError) throw new Error(pageError.message);
+    if (pageError) return c.json({ error: pageError.message }, wikiRpcErrorStatus(pageError), corsHeaders);
     if (!page) return c.json({ error: `Wiki page '${slug}' not found.` }, 404, corsHeaders);
 
     const rpcParams: Record<string, unknown> = {
@@ -1656,7 +1681,7 @@ app.put("/wiki/pages/:slug/sections/:sectionKey", async (c) => {
     if (body.display_order !== undefined) rpcParams.p_display_order = body.display_order;
 
     const { data, error } = await supabase.rpc("wiki_write_section", rpcParams);
-    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
     return c.json(data || {}, 200, corsHeaders);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Write section failed" }, 500, corsHeaders);
@@ -1669,7 +1694,7 @@ app.post("/wiki/sections/:id/accept-pending", async (c) => {
       p_section_id: c.req.param("id"),
       p_actor: "dashboard",
     });
-    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
     return c.json(data || {}, 200, corsHeaders);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Accept pending failed" }, 500, corsHeaders);
@@ -1686,7 +1711,7 @@ app.post("/wiki/sections/:id/reject-pending", async (c) => {
       p_section_id: c.req.param("id"),
       p_actor: "dashboard",
     });
-    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
     return c.json(data || {}, 200, corsHeaders);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Reject pending failed" }, 500, corsHeaders);
@@ -1706,12 +1731,12 @@ app.post("/wiki/sections/:id/lock", async (c) => {
       .is("deleted_at", null)
       .select("id, locked")
       .maybeSingle();
-    if (error) throw new Error(error.message);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
     if (!data) return c.json({ error: `Wiki section '${id}' not found.` }, 404, corsHeaders);
 
     return c.json({ section_id: data.id, locked: data.locked }, 200, corsHeaders);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "Lock update failed" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+    return c.json({ error: error instanceof Error ? error.message : "Lock update failed" }, 500, corsHeaders);
   }
 });
 
@@ -1726,12 +1751,12 @@ app.delete("/wiki/pages/:slug", async (c) => {
       .eq("status", "active")
       .select("slug, status")
       .maybeSingle();
-    if (error) throw new Error(error.message);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error), corsHeaders);
     if (!data) return c.json({ error: `Wiki page '${slug}' not found.` }, 404, corsHeaders);
 
     return c.json({ slug: data.slug, status: data.status }, 200, corsHeaders);
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "Archive failed" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+    return c.json({ error: error instanceof Error ? error.message : "Archive failed" }, 500, corsHeaders);
   }
 });
 

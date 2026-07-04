@@ -73,7 +73,7 @@ Accepting a contact edit or adding a method keeps the contact's searchable **car
 
 ### Wiki (optional)
 
-These require the `wiki-pages` schema. On a brain without it the routes return a clean `404` (both "function does not exist" from the RPC-backed routes and "relation does not exist" from the direct-table list query map to 404), and the dashboard hides the section via feature detection (`GET /wiki/pages?per_page=1`).
+These require the `wiki-pages` schema. On a brain without it the routes return a clean `404`: the gateway maps PostgREST's schema-cache errors (`PGRST205` "Could not find the table" from the direct-table list query, `PGRST202` "Could not find the function" from the RPC-backed routes) as well as raw Postgres `42P01`/`42883` "does not exist" errors to 404. The dashboard hides the section via feature detection (`GET /wiki/pages?per_page=1`).
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
@@ -86,7 +86,7 @@ These require the `wiki-pages` schema. On a brain without it the routes return a
 | `/wiki/sections/:id/lock` | POST | Freeze/unfreeze a section against machine overwrites |
 | `/wiki/pages/:slug` | DELETE | Archive a page (`status='archived'`) — never a hard delete |
 
-`GET /wiki/pages` only lists `status='active'` pages, matching `wiki_list_pages`. `GET /wiki/pages/:slug` fetches by slug with no status filter (same as `wiki_get_page` in `integrations/wiki-mcp`), so an archived page stays individually reachable by slug even though it drops out of the list. Section writes from this REST surface always use `p_origin='manual'` — a human editing through the dashboard takes ownership of the section, same as an in-app manual edit; automated/generator writes still go through `wiki-mcp`'s `wiki_write_section` tool with `p_origin='generated'` and are subject to the regen guard.
+`GET /wiki/pages` only lists `status='active'` pages, matching `wiki_list_pages`. `GET /wiki/pages/:slug` fetches by slug with no status filter (same as `wiki_get_page` in `integrations/wiki-mcp`), so an archived page stays individually reachable by slug — and its sections stay editable via the `PUT` route, which also skips the status filter — even though it drops out of the list. Section writes from this REST surface always use `p_origin='manual'` — a human editing through the dashboard takes ownership of the section, same as an in-app manual edit; automated/generator writes still go through `wiki-mcp`'s `wiki_write_section` tool with `p_origin='generated'` and are subject to the regen guard.
 
 ## Deploy
 

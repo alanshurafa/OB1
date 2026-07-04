@@ -33,11 +33,18 @@ try {
   assert(typeof listedRow.section_count === "number", "list row carries a numeric section_count");
   assert(listedRow.section_count === 0, "brand new page has zero sections");
 
-  // Reject invalid page_kind -------------------------------------------------
+  // Reject invalid page_kind (list filter + create) --------------------------
   const badKindResponse = await fetch(`${baseUrl}/wiki/pages?page_kind=not-a-real-kind`, {
     headers: { "x-brain-key": accessKey },
   });
-  assert(badKindResponse.status === 400, "invalid page_kind is rejected with 400");
+  assert(badKindResponse.status === 400, "invalid page_kind filter is rejected with 400");
+
+  const badCreateResponse = await fetch(`${baseUrl}/wiki/pages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-brain-key": accessKey },
+    body: JSON.stringify({ slug: `${slug}-bogus-kind`, title: "Bogus Kind", page_kind: "bogus" }),
+  });
+  assert(badCreateResponse.status === 400, "invalid page_kind on create is rejected with 400");
 
   // Get by slug (no sections yet) -------------------------------------------
   const detail = await request("GET", `/wiki/pages/${slug}`);
