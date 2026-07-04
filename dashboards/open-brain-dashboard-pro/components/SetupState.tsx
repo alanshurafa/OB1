@@ -3,7 +3,16 @@
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const REPO_BASE = "https://github.com/NateBJones-Projects/OB1/tree/main";
+// Base URL for the schema-folder links on the setup cards. Defaults to the
+// alanshurafa/OB1 fork because the optional schemas (crm-core, crm-engagement,
+// wiki-pages) haven't landed on upstream main yet — an upstream link would 404
+// at the card's primary call-to-action. Override with
+// NEXT_PUBLIC_SCHEMA_REPO_BASE if you maintain your own repo/mirror.
+// NEXT_PUBLIC_* vars are inlined at build time (static member expression, same
+// mechanism as NEXT_PUBLIC_OPTIONAL_NAV in Sidebar.tsx).
+const REPO_BASE =
+  process.env.NEXT_PUBLIC_SCHEMA_REPO_BASE ||
+  "https://github.com/alanshurafa/OB1/tree/main";
 
 interface SurfaceCopy {
   label: string;
@@ -13,6 +22,9 @@ interface SurfaceCopy {
   routePrefix: string;
 }
 
+// schemaPaths are joined onto REPO_BASE to form the setup-card links. They
+// must track the actual folder names in the repo tree — if a schema folder is
+// renamed or moved, update these strings or the links 404 silently.
 const SURFACES: Record<"crm" | "wiki", SurfaceCopy> = {
   crm: {
     label: "CRM",
@@ -31,9 +43,9 @@ const SURFACES: Record<"crm" | "wiki", SurfaceCopy> = {
 /**
  * Setup card shown in place of an optional surface (CRM, Wiki) when the brain
  * hasn't enabled it yet. Explains which schema(s) to apply, where to run them,
- * and links to the schema README on the canonical public repo. Pairs with a
- * "Re-check now" button that re-probes both optional surfaces and refreshes
- * the page without requiring a sign-out/sign-in cycle.
+ * and links to the schema folder on the public repo (REPO_BASE above). Pairs
+ * with a "Re-check now" button that re-probes both optional surfaces and
+ * refreshes the page without requiring a sign-out/sign-in cycle.
  */
 export function SetupState({ surface }: { surface: "crm" | "wiki" }) {
   const copy = SURFACES[surface];
