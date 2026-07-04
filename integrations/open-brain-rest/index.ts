@@ -1476,6 +1476,265 @@ app.get("/crm/contacts/:id/timeline", async (c) => {
   }
 });
 
+// ─── Wiki (optional) ────────────────────────────────────────────────────────
+// Exposes the wiki-pages schema (wiki_pages / wiki_sections / wiki_write_section
+// et al.) as REST for the dashboard. Mirrors the visibility and ordering used by
+// the wiki-mcp tools (wiki_list_pages, wiki_get_page, wiki_write_section) so the
+// two surfaces show the same thing. All routes are already behind the
+// x-brain-key middleware below. Requires the wiki-pages schema; on a brain
+// without it these routes surface a clean 404 (see wikiRpcErrorStatus) and the
+// dashboard hides the section via feature detection (GET /wiki/pages?per_page=1).
+
+const WIKI_PAGE_KINDS = ["topic", "entity", "autobiography", "custom"] as const;
+
+const WIKI_PAGE_COLUMNS = "id, slug, title, page_kind, status, metadata, created_at, updated_at";
+const WIKI_SECTION_COLUMNS =
+  "id, section_key, heading, display_order, origin, locked, body_md, pending_generated_md, pending_generated_at, generation_source, evidence_thought_ids, created_at, updated_at";
+
+const wikiCreatePageSchema = z.object({
+  slug: z.string().min(1),
+  title: z.string().min(1),
+  page_kind: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+const wikiWriteSectionSchema = z.object({
+  body_md: z.string(),
+  heading: z.string().optional(),
+  display_order: z.number().int().optional(),
+});
+
+const wikiLockSchema = z.object({
+  locked: z.boolean(),
+});
+
+// Compact error mapper for the wiki RPCs/tables, modeled on crmRpcErrorStatus.
+// ADDITIONALLY handles the "schema not installed" case: on a brain without the
+// wiki-pages schema, RPC calls fail with "function ... does not exist" and the
+// direct-table list query fails with "relation ... does not exist" — both map
+// to a clean 404 so GET /wiki/pages?per_page=1 works as a feature-detect probe
+// (same philosophy as crmAvailable()).
+function wikiRpcErrorStatus(message: string): 404 | 409 | 400 | 500 {
+  if (
+    message.includes("does not exist") ||
+    message.includes("not found")
+  ) {
+    return 404;
+  }
+  if (message.includes("locked") || message.includes("pending")) return 409;
+  if (/\b(invalid|required|must be|cannot)\b/.test(message)) return 400;
+  return 500;
+}
+
+app.get("/wiki/pages", async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const pageKind = url.searchParams.get("page_kind");
+    if (pageKind && !WIKI_PAGE_KINDS.includes(pageKind as (typeof WIKI_PAGE_KINDS)[number])) {
+      return c.json({ error: `Invalid page_kind. Must be one of: ${WIKI_PAGE_KINDS.join(", ")}` }, 400, corsHeaders);
+    }
+    const page = intParam(url.searchParams.get("page"), 1, 1, 100000);
+    const perPage = intParam(url.searchParams.get("per_page"), 25, 1, 100);
+    const offset = (page - 1) * perPage;
+
+    let query = supabase
+      .from("wiki_pages")
+      .select(WIKI_PAGE_COLUMNS, { count: "exact" })
+      .eq("status", "active");
+    if (pageKind) query = query.eq("page_kind", pageKind);
+
+    const { data, error, count } = await query
+      .order("updated_at", { ascending: false })
+      .range(offset, offset + perPage - 1);
+    if (error) throw new Error(error.message);
+
+    const rows = data || [];
+    // Grouped section count over just this page's ids — one follow-up query,
+    // no N+1 (mirrors wiki_list_pages in wiki-mcp/index.ts).
+    const pageIds = rows.map((row) => (row as { id: string }).id);
+    const sectionCounts: Record<string, number> = {};
+    if (pageIds.length > 0) {
+      const { data: sectionRows, error: sectionError } = await supabase
+        .from("wiki_sections")
+        .select("page_id")
+        .in("page_id", pageIds)
+        .is("deleted_at", null);
+      if (sectionError) throw new Error(sectionError.message);
+      for (const row of (sectionRows || []) as Array<{ page_id: string }>) {
+        sectionCounts[row.page_id] = (sectionCounts[row.page_id] || 0) + 1;
+      }
+    }
+
+    const withCounts = rows.map((row) => ({
+      ...row,
+      section_count: sectionCounts[(row as { id: string }).id] || 0,
+    }));
+
+    return c.json({ data: withCounts, total: count || 0, page, per_page: perPage }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to list wiki pages" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+  }
+});
+
+app.post("/wiki/pages", async (c) => {
+  try {
+    const parsed = wikiCreatePageSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid page payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+    const slug = body.slug.trim();
+    const title = body.title.trim();
+    if (!slug) return c.json({ error: "slug is required" }, 400, corsHeaders);
+    if (!title) return c.json({ error: "title is required" }, 400, corsHeaders);
+
+    const { data, error } = await supabase.rpc("wiki_upsert_page", {
+      p_slug: slug,
+      p_title: title,
+      p_page_kind: body.page_kind || "topic",
+      p_metadata: body.metadata || {},
+      p_actor: "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Create page failed" }, 500, corsHeaders);
+  }
+});
+
+app.get("/wiki/pages/:slug", async (c) => {
+  try {
+    const slug = c.req.param("slug");
+    // Mirrors wiki_get_page in wiki-mcp/index.ts: fetched by slug with no
+    // status filter (archived pages remain individually fetchable by slug;
+    // only the list route restricts to status='active').
+    const { data: page, error: pageError } = await supabase
+      .from("wiki_pages")
+      .select(WIKI_PAGE_COLUMNS)
+      .eq("slug", slug)
+      .maybeSingle();
+    if (pageError) throw new Error(pageError.message);
+    if (!page) return c.json({ error: `Wiki page '${slug}' not found.` }, 404, corsHeaders);
+
+    const { data: sections, error: sectionError } = await supabase
+      .from("wiki_sections")
+      .select(WIKI_SECTION_COLUMNS)
+      .eq("page_id", (page as { id: string }).id)
+      .is("deleted_at", null)
+      .order("display_order", { ascending: true })
+      .order("section_key", { ascending: true });
+    if (sectionError) throw new Error(sectionError.message);
+
+    return c.json({ page, sections: sections || [] }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Failed to load wiki page" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+  }
+});
+
+app.put("/wiki/pages/:slug/sections/:sectionKey", async (c) => {
+  try {
+    const parsed = wikiWriteSectionSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid section payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const body = parsed.data;
+
+    const slug = c.req.param("slug");
+    const { data: page, error: pageError } = await supabase
+      .from("wiki_pages")
+      .select("id")
+      .eq("slug", slug)
+      .eq("status", "active")
+      .maybeSingle();
+    if (pageError) throw new Error(pageError.message);
+    if (!page) return c.json({ error: `Wiki page '${slug}' not found.` }, 404, corsHeaders);
+
+    const rpcParams: Record<string, unknown> = {
+      p_page_id: (page as { id: string }).id,
+      p_section_key: c.req.param("sectionKey"),
+      p_body_md: body.body_md,
+      p_origin: "manual",
+      p_actor: "dashboard",
+    };
+    if (body.heading !== undefined) rpcParams.p_heading = body.heading;
+    if (body.display_order !== undefined) rpcParams.p_display_order = body.display_order;
+
+    const { data, error } = await supabase.rpc("wiki_write_section", rpcParams);
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Write section failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/wiki/sections/:id/accept-pending", async (c) => {
+  try {
+    const { data, error } = await supabase.rpc("wiki_accept_pending", {
+      p_section_id: c.req.param("id"),
+      p_actor: "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Accept pending failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/wiki/sections/:id/reject-pending", async (c) => {
+  try {
+    // wiki_reject_pending ships in a sibling schemas PR (schemas/wiki-pages) —
+    // no SQL is defined here, this route just calls the RPC by name. On a brain
+    // that hasn't applied that migration yet, the RPC-does-not-exist error maps
+    // to 404 via wikiRpcErrorStatus, same as every other wiki RPC here.
+    const { data, error } = await supabase.rpc("wiki_reject_pending", {
+      p_section_id: c.req.param("id"),
+      p_actor: "dashboard",
+    });
+    if (error) return c.json({ error: error.message }, wikiRpcErrorStatus(error.message || ""), corsHeaders);
+    return c.json(data || {}, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Reject pending failed" }, 500, corsHeaders);
+  }
+});
+
+app.post("/wiki/sections/:id/lock", async (c) => {
+  try {
+    const parsed = wikiLockSchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: "Invalid lock payload", details: parsed.error.flatten() }, 400, corsHeaders);
+    const id = c.req.param("id");
+
+    const { data, error } = await supabase
+      .from("wiki_sections")
+      .update({ locked: parsed.data.locked })
+      .eq("id", id)
+      .is("deleted_at", null)
+      .select("id, locked")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return c.json({ error: `Wiki section '${id}' not found.` }, 404, corsHeaders);
+
+    return c.json({ section_id: data.id, locked: data.locked }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Lock update failed" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+  }
+});
+
+app.delete("/wiki/pages/:slug", async (c) => {
+  try {
+    const slug = c.req.param("slug");
+    // Archive only — the schema's guard rail forbids hard deletes of wiki pages.
+    const { data, error } = await supabase
+      .from("wiki_pages")
+      .update({ status: "archived", updated_by: "dashboard" })
+      .eq("slug", slug)
+      .eq("status", "active")
+      .select("slug, status")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return c.json({ error: `Wiki page '${slug}' not found.` }, 404, corsHeaders);
+
+    return c.json({ slug: data.slug, status: data.status }, 200, corsHeaders);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Archive failed" }, wikiRpcErrorStatus(error instanceof Error ? error.message : ""), corsHeaders);
+  }
+});
+
 Deno.serve((req) => {
   const url = new URL(req.url);
   if (url.pathname === "/open-brain-rest") {
