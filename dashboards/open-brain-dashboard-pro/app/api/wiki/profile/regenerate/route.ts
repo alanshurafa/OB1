@@ -38,6 +38,11 @@ function validateWorkerUrl(candidate: string): string | null {
     ) {
       return null;
     }
+    // fetch() rejects credentialed URLs outright (TypeError before any
+    // network attempt), which would surface as a misleading generic 502.
+    if (parsed.username || parsed.password) {
+      return null;
+    }
     return candidate;
   } catch {
     return null;

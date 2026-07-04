@@ -70,12 +70,16 @@ export function RegenerateProfileButton({
       if (!res.ok) {
         throw new Error(data.error || "Profile generation failed");
       }
-      if (successHref) {
+      const sections = Array.isArray(data.sections) ? data.sections : [];
+      // The worker returns 200 even when individual sections fail; only
+      // navigate away when the run was fully clean, otherwise stay and show
+      // the per-section outcomes so errors aren't silently dropped.
+      if (successHref && !sections.some((s) => s.action === "error")) {
         router.push(successHref);
         router.refresh();
         return;
       }
-      setOutcomes(Array.isArray(data.sections) ? data.sections : []);
+      setOutcomes(sections);
       // Re-read the server component so new/updated section bodies (and any
       // pending review panels) render without a manual reload.
       router.refresh();
