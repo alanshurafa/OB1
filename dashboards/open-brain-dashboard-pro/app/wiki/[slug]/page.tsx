@@ -83,7 +83,7 @@ export default async function WikiPageDetail({
       {archived && (
         <div className="bg-bg-surface border border-amber/30 rounded-lg px-4 py-3">
           <p className="text-text-secondary text-sm">
-            This page is archived. Its sections are read-only here.
+            This page is archived — hidden from the wiki list, but its sections stay editable by slug.
           </p>
         </div>
       )}
@@ -100,18 +100,16 @@ export default async function WikiPageDetail({
               key={section.id}
               slug={page.slug}
               section={section}
-              archived={archived}
             />
           ))}
         </div>
       )}
 
-      {/* Add section (only for active pages) */}
-      {!archived && (
-        <div>
-          <AddSectionForm slug={page.slug} />
-        </div>
-      )}
+      {/* Add section — allowed on archived pages too: the gateway permits
+          section writes regardless of page status (wiki_write_section parity). */}
+      <div>
+        <AddSectionForm slug={page.slug} />
+      </div>
 
       <p className="text-text-muted text-xs">
         Created <FormattedDate date={page.created_at} /> · Updated{" "}

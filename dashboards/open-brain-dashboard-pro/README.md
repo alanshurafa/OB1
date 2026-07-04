@@ -36,9 +36,11 @@ If your brain runs the persistent-wiki layer (the `schemas/wiki-pages` schema an
 | Page | What you get |
 |------|--------------|
 | **Wiki** (`/wiki`) | Page list filtered by kind (topic / entity / autobiography / custom), with section counts and a "new page" form. |
-| **Wiki page** (`/wiki/:slug`) | Sections in display order, each with its markdown body rendered sanitized, an origin chip (yours / generated), a lock toggle, and an evidence chip linking supporting thoughts. Edit a section inline (your edit takes ownership); add a section; archive the page. When a machine writer proposes an update to a section you own, a review panel shows the current body against the proposed draft with **accept / reject**. |
+| **Wiki page** (`/wiki/:slug`) | Sections in display order, each with its markdown body rendered sanitized, an origin chip (yours / generated), a lock toggle, and an evidence chip listing supporting thought ids. Edit a section inline (your edit takes ownership); add a section; archive the page. When a machine writer proposes an update to a section you own, a review panel shows the current body against the proposed draft with **accept / reject**. |
 
 Wiki pages are reachable at `/wiki` (a dedicated sidebar entry lands in a later change). The dashboard probes for the `/wiki` surface once at login and caches the result in the session. When the schema is absent — the probe comes back negative, or `GET /wiki/pages` returns 404 — the page renders a short inline notice ("Wiki schema not installed — apply `schemas/wiki-pages` to enable") instead of an error, so a brain without the wiki layer behaves exactly as before.
+
+Archived pages are hidden from the list but stay fetchable — and editable — by slug; unarchive is a future gateway addition.
 
 Section bodies are agent-writable over MCP, so the dashboard treats them as untrusted: markdown is rendered with `react-markdown` and **no raw-HTML plugin**, so any embedded HTML is shown as text and never executed.
 
