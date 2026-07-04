@@ -62,9 +62,11 @@ prose.
 - **`skipped`** — no supporting thoughts (or the model found no facts, or the
   per-run LLM-call cap was reached). The section is left untouched. Sections are
   never padded to look complete.
-- **`error`** — retrieval, synthesis, or the write failed for that section. The
-  run fails open: existing content is left in place, and the other sections
-  still process.
+- **`error`** — retrieval, synthesis, output validation, or the write failed for
+  that section. (A response over 2,400 characters or one that does not start
+  with a `-`/`*` bullet marker is rejected before writing — prompt rules alone
+  don't survive provider fallback.) The run fails open: existing content is left
+  in place, and the other sections still process.
 
 ### How this differs from the wiki recipes
 
@@ -144,11 +146,16 @@ supabase secrets set \
 | `OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | *(≥1 required)* | LLM providers, tried in that order. First configured provider is primary. |
 | `OPENROUTER_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5` | Synthesis model on the OpenRouter path. |
 | `PROFILE_SUBJECT_NAME` | *(unset → "the user")* | The user's display name, for third-person synthesis. |
-| `PROFILE_EXCLUDE_PERSONAL` | `false` | When `true`, also drop `sensitivity_tier='personal'` thoughts. `restricted` is **always** excluded regardless. |
+| `PROFILE_EXCLUDE_PERSONAL` | `false` | When `true`, also drop `sensitivity_tier='personal'` thoughts. `restricted` is **always** excluded regardless. When set, top-topic steering is disabled too; interests derive from thought types only (`brain_stats_aggregate` has no personal-tier control, so a personal-only topic string could otherwise steer searches). |
 | `PROFILE_MAX_THOUGHTS_PER_SECTION` | `40` | Cap on thoughts fed to a single section's synthesis call. |
-| `PROFILE_MAX_LLM_CALLS` | `10` | Cap on LLM completions per run (10 = one per section). Set `0` to disable. |
+| `PROFILE_MAX_LLM_CALLS` | `10` | Cap on LLM completions per run (10 = one per section). Set an explicit `0` to disable. |
 | `PROFILE_MAX_INPUT_CHARS` | `24000` | Max characters of thought content packed into one prompt. |
 | `FETCH_TIMEOUT_MS` | `60000` | Per-provider LLM fetch timeout. On timeout the fallback chain advances. |
+
+The three `PROFILE_MAX_*` caps are clamped to sane ranges. Blank, negative, or
+non-numeric values fall back to the documented defaults — a blank
+`PROFILE_MAX_LLM_CALLS` never disables the cap; only an explicit `0` does.
+`GET /health` reports the effective post-clamp values.
 
 ### 4. Probe Health (no auth, no writes)
 
@@ -184,6 +191,13 @@ function, `pg_cron` (via `net.http_post`), a Claude Code scheduled task, or an
 external cron. A daily or weekly run is plenty; the profile is durable state, not
 a live feed. Because writes go through the regen guard, a scheduled run can never
 overwrite a section you have edited — it only ever proposes a pending draft.
+
+> [!NOTE]
+> There is no run-lock. Concurrent runs are database-safe — the
+> `wiki_write_section` guard serializes section writes — but each overlapping
+> run pays its own LLM budget (up to `PROFILE_MAX_LLM_CALLS` completions).
+> Pick a schedule interval comfortably longer than a run's duration so runs
+> don't overlap.
 
 ## Expected Outcome
 
@@ -252,5 +266,7 @@ Anthropic; the first key you set becomes the primary provider.
 **Issue: People & Relationships shows plain names, no contact links.**
 Solution: Contact links require [`schemas/crm-core`](../../../schemas/crm-core/)
 (a readable `crm_contacts` table). Without it the worker degrades to plain names
-by design. Names are also only linked when they match a `crm_contacts.full_name`
-row.
+by design. Names are also only linked when they match a
+`crm_contacts.display_name` row, and names containing markdown syntax characters
+(`[`, `]`, `(`, `)`) are intentionally left unlinked to avoid emitting broken
+links.

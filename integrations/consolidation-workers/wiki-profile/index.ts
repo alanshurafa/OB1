@@ -30,7 +30,7 @@
  */
 
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { isRecord, asString } from "../_shared/helpers.ts";
+import { isRecord, asString, asInteger } from "../_shared/helpers.ts";
 import {
   CLASSIFIER_MODEL_OPENROUTER,
   CLASSIFIER_MODEL_OPENAI,
@@ -61,14 +61,29 @@ const PROFILE_EXCLUDE_PERSONAL = (Deno.env.get("PROFILE_EXCLUDE_PERSONAL") ?? ""
 
 // --- Cost caps (env, mirroring smart-ingest's SMART_INGEST_* module-const style) ---
 
+/**
+ * Resolve an integer cost-cap env var, clamped via _shared asInteger.
+ *
+ * Raw `Number(env ?? default)` is unsafe here: Number("") is 0, so an env var
+ * set to an empty string would silently read as 0 — which for
+ * PROFILE_MAX_LLM_CALLS means "cap disabled", the exact runaway this cap
+ * exists to prevent. Blank/unset and negative values fall back to the
+ * documented default; NaN/typos fall back inside asInteger; in-range values
+ * are clamped to [min, max]. GET /health reports these post-clamp effective
+ * values.
+ */
+function resolveCapEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = (Deno.env.get(name) ?? "").trim();
+  if (raw === "" || raw.startsWith("-")) return fallback;
+  return asInteger(raw, fallback, min, max);
+}
+
 /** Max thoughts fed to any one section's synthesis call (post-dedupe). */
-const PROFILE_MAX_THOUGHTS_PER_SECTION = Number(
-  Deno.env.get("PROFILE_MAX_THOUGHTS_PER_SECTION") ?? 40,
-);
-/** Max LLM completions per run. Default 10 = exactly one per section. */
-const PROFILE_MAX_LLM_CALLS = Number(Deno.env.get("PROFILE_MAX_LLM_CALLS") ?? 10);
+const PROFILE_MAX_THOUGHTS_PER_SECTION = resolveCapEnv("PROFILE_MAX_THOUGHTS_PER_SECTION", 40, 1, 200);
+/** Max LLM completions per run. Default 10 = exactly one per section; explicit 0 disables the cap. */
+const PROFILE_MAX_LLM_CALLS = resolveCapEnv("PROFILE_MAX_LLM_CALLS", 10, 0, 100);
 /** Max characters of thought content packed into a single synthesis prompt. */
-const PROFILE_MAX_INPUT_CHARS = Number(Deno.env.get("PROFILE_MAX_INPUT_CHARS") ?? 24_000);
+const PROFILE_MAX_INPUT_CHARS = resolveCapEnv("PROFILE_MAX_INPUT_CHARS", 24_000, 1_000, 200_000);
 /** Per-thought content truncation before it enters a prompt. */
 const MAX_CONTENT_PER_THOUGHT = 1200;
 
@@ -153,10 +168,17 @@ const THOUGHT_COLUMNS = "id, content, type, importance, created_at, sensitivity_
  * promoted column OR metadata->>'sensitivity_tier', whichever is set) is not
  * 'restricted', and — when PROFILE_EXCLUDE_PERSONAL is on — not 'personal'.
  *
- * This mirrors the open-brain-rest gateway's `isRestricted()` approach: filter
- * the column in SQL (a cheap, index-friendly `.neq`), then reconcile the
- * metadata fallback in JS. schemas/enhanced-thoughts treats a row as restricted
- * if EITHER source says so; we match that, and extend it to the personal tier.
+ * Split of duties with the SQL filter (mirrors the open-brain-rest gateway's
+ * `isRestricted()`): the query-level `.neq("sensitivity_tier", "restricted")`
+ * drops rows whose COLUMN is 'restricted' — and, by SQL three-valued logic,
+ * also rows whose column is NULL (NULL <> 'restricted' is not true). A row
+ * with a NULL column tier therefore never reaches this function, regardless of
+ * its metadata: it is dropped fail-closed at the SQL layer. What this
+ * post-filter adds is the metadata escalation for rows that DO come back — a
+ * non-restricted column value (e.g. the backfilled 'standard' default) with
+ * metadata->>'sensitivity_tier' = 'restricted' (or 'personal' when the flag is
+ * on) is still rejected here, matching schemas/enhanced-thoughts'
+ * either-source-counts rule.
  */
 function rowAllowed(row: Record<string, unknown>): boolean {
   const colTier = asString(row.sensitivity_tier, "");
@@ -214,7 +236,7 @@ async function fetchByTypes(
     .select(THOUGHT_COLUMNS)
     .in("type", types)
     .is("metadata->>generated_by", null) // never fold a prior generated artifact back in
-    .neq("sensitivity_tier", "restricted"); // column-level cut; metadata fallback reconciled in JS
+    .neq("sensitivity_tier", "restricted"); // drops 'restricted' AND NULL-column rows (fail-closed); metadata escalation re-checked in JS
   if (opts.minImportance !== undefined) q = q.gte("importance", opts.minImportance);
   if (opts.sinceDays !== undefined) {
     const since = new Date();
@@ -297,13 +319,13 @@ async function fetchCrmContacts(): Promise<Map<string, string>> {
   try {
     const { data, error } = await supabase
       .from("crm_contacts")
-      .select("id, full_name")
+      .select("id, display_name") // schemas/crm-core: display_name is the NOT NULL name column
       .limit(500);
     if (error) return map; // table missing / not granted — degrade to plain names
     for (const row of data ?? []) {
       if (!isRecord(row)) continue;
       const id = asString(row.id, "");
-      const name = asString(row.full_name, "").trim();
+      const name = asString(row.display_name, "").trim();
       if (id && name) map.set(name.toLowerCase(), id);
     }
   } catch (_err) {
@@ -419,6 +441,15 @@ const SECTIONS: SectionSpec[] = [
       "Recurring non-work interests, hobbies, and topics the user returns to for their " +
       "own sake. Pull from what shows up repeatedly, not one-off mentions.",
     retrieve: async (ctx) => {
+      // PROFILE_EXCLUDE_PERSONAL also disables top-topic steering (maintainer
+      // decision): brain_stats_aggregate has no personal-tier control, so a
+      // topic string that only occurs in personal thoughts could still steer
+      // the text searches even though the matching rows themselves get
+      // filtered out. With the flag on, interests derive from thought types
+      // only.
+      if (PROFILE_EXCLUDE_PERSONAL) {
+        return dedupeAndCap(await fetchByTypes(["idea", "reference"], { limit: 20 }));
+      }
       const topicQueries = ctx.topics.slice(0, 6).map((t) => searchText(t, 8));
       const [ideas, searched, topical] = await Promise.all([
         fetchByTypes(["idea", "reference"], { limit: 20 }),
@@ -786,6 +817,13 @@ function appendContactLinks(body: string, contacts: Map<string, string>): string
   if (contacts.size === 0) return body;
   const linked: string[] = [];
   for (const [nameLower, id] of contacts) {
+    // Names containing markdown link syntax chars ([ ] ( )) are never linked:
+    // an unescaped bracket or paren inside a [label](url) breaks the link, and
+    // escaping rules differ across markdown renderers — leaving the name as
+    // plain text is safer than emitting a possibly-broken link. The regex
+    // below matches the name literally, so the matched span can only contain
+    // these chars if the name itself does; checking the name covers both.
+    if (/[[\]()]/.test(nameLower)) continue;
     // Only link contacts actually named in the synthesized body (case-insensitive).
     const re = new RegExp(`\\b${nameLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
     const match = body.match(re);
@@ -793,6 +831,31 @@ function appendContactLinks(body: string, contacts: Map<string, string>): string
   }
   if (linked.length === 0) return body;
   return `${body}\n\n**Linked contacts:** ${[...new Set(linked)].join(" · ")}`;
+}
+
+// --- Output validation (cheap programmatic guard before any write) ---
+
+/**
+ * Max characters accepted from one section synthesis response. The prompt asks
+ * for at most ~200 words (~1,400 chars of bullets); 2,400 leaves headroom for
+ * markdown syntax without letting a runaway response land on the page.
+ */
+const MAX_SECTION_OUTPUT_CHARS = 2_400;
+
+/**
+ * Validate a (trimmed, non-sentinel) synthesis response before writing it.
+ * Prompt rules alone don't survive provider fallback — a fallback model may
+ * emit prose, preamble, or run long. Returns a failure reason, or null when
+ * the output is acceptable.
+ */
+function validateSectionOutput(normalized: string): string | null {
+  if (normalized.length > MAX_SECTION_OUTPUT_CHARS) {
+    return `response is ${normalized.length} chars, exceeds ${MAX_SECTION_OUTPUT_CHARS}`;
+  }
+  if (!/^[-*]/.test(normalized)) {
+    return "response does not start with a bullet marker (- or *)";
+  }
+  return null;
 }
 
 // --- Main handler ---
@@ -874,8 +937,10 @@ Deno.serve(async (req) => {
     }
 
     // 2. Shared retrieval context + existing bodies + optional CRM contacts.
+    //    Top-topic steering is skipped entirely under PROFILE_EXCLUDE_PERSONAL —
+    //    see the interests-hobbies retrieve for the rationale.
     const [topics, existingBodies, crmContacts] = await Promise.all([
-      topTopics(0, 12),
+      PROFILE_EXCLUDE_PERSONAL ? Promise.resolve<string[]>([]) : topTopics(0, 12),
       pageId ? fetchExistingBodies(pageId) : Promise.resolve(new Map<string, string>()),
       fetchCrmContacts(),
     ]);
@@ -945,6 +1010,23 @@ Deno.serve(async (req) => {
       if (!normalized || /^\(not enough evidence yet\)$/i.test(normalized)) {
         outcomes.push({ section_key: section.key, action: "skipped", reason: "model_found_no_facts", thought_count: sources.length });
         totals.skipped++;
+        continue;
+      }
+
+      // Programmatic output validation — reject oversized or non-bullet output
+      // before it can reach the page. The section's existing content is left
+      // untouched (fail-open, same as a synthesis error).
+      const validationFailure = validateSectionOutput(normalized);
+      if (validationFailure) {
+        console.error(`Output validation failed for ${section.key}: ${validationFailure}`);
+        outcomes.push({
+          section_key: section.key,
+          action: "error",
+          reason: "output_validation_failed",
+          details: validationFailure,
+          thought_count: sources.length,
+        });
+        totals.error++;
         continue;
       }
 

@@ -111,10 +111,13 @@ supabase secrets set \
 - `PROFILE_SUBJECT_NAME` — the user's display name for third-person
   synthesis. Unset falls back to "the user".
 - `PROFILE_EXCLUDE_PERSONAL` — when `true`, also drop `personal`-tier
-  thoughts. `restricted` is always excluded regardless.
+  thoughts. `restricted` is always excluded regardless. When set,
+  top-topic steering is disabled too; interests derive from thought
+  types only.
 - `PROFILE_MAX_THOUGHTS_PER_SECTION` — cap on thoughts per section
   (default 40). `PROFILE_MAX_LLM_CALLS` caps completions per run
-  (default 10 = one per section; `0` disables). `PROFILE_MAX_INPUT_CHARS`
+  (default 10 = one per section; an explicit `0` disables — blank or
+  invalid values fall back to the default). `PROFILE_MAX_INPUT_CHARS`
   caps prompt content per call (default 24000).
 
 ### 4. Run the Bio Worker
