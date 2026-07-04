@@ -183,6 +183,14 @@ curl -X POST "https://<project-ref>.supabase.co/functions/v1/wiki-profile" \
   -H "x-brain-key: your-access-key"
 ```
 
+You can also trigger a run from the
+[Pro dashboard](../../../dashboards/open-brain-dashboard-pro/): the
+`/wiki/user-profile` page header has a **Regenerate profile** button, and the
+wiki list shows a **Create your profile** card until the page exists. Both POST
+through the dashboard's `/api/wiki/profile/regenerate` route, which forwards
+the session's brain key to this worker and renders the per-section outcomes
+(pending sections surface in the dashboard's draft-review panel).
+
 ### 7. (Optional) Schedule Regeneration
 
 This worker does not schedule itself. To keep the profile fresh, invoke the
