@@ -66,9 +66,9 @@ Pick the surface you want with `--bundle`:
 | Bundle | Schemas applied | Edge Functions deployed | Verified by |
 |--------|-----------------|-------------------------|-------------|
 | `core` | core, workflow-status, enhanced-thoughts | open-brain-rest | live-smoke |
-| `wiki` | core stack + entity-extraction, typed-reasoning-edges, wiki-pages | open-brain-rest, wiki-mcp, wiki-profile | live-smoke, wiki-profile health |
+| `wiki` | core stack + entity-extraction, typed-reasoning-edges, wiki-pages | open-brain-rest, wiki-mcp, wiki-profile | live-smoke, wiki-smoke, wiki-profile health |
 | `crm` | core stack + crm-core, crm-engagement | open-brain-rest, crm-mcp | live-smoke, crm-smoke |
-| `wiki-crm` (default) | all of the above | open-brain-rest, wiki-mcp, crm-mcp, wiki-profile | live-smoke, wiki-profile health, crm-smoke |
+| `wiki-crm` (default) | all of the above | open-brain-rest, wiki-mcp, crm-mcp, wiki-profile | live-smoke, wiki-smoke, wiki-profile health, crm-smoke |
 
 ### Flags
 
@@ -99,6 +99,8 @@ Each schema file ships idempotent (`IF NOT EXISTS`, `CREATE OR REPLACE`), and th
 
 Edge Functions deploy with the Supabase CLI using `--use-api --no-verify-jwt`. Three of the four functions are self-contained; the `wiki-profile` worker imports a shared helper folder, so the script stages it into a temporary working directory with the shared folder as a sibling before deploying, then cleans the directory up. A failed function deploy is reported per-function and does not abort the rest — your SQL stays applied.
 
+The installer always deploys whatever version of each function is in your checkout, and `open-brain-rest` is the most version-sensitive of them: the wiki milestone adds the `/wiki/*` route group (and its `wiki-smoke.mjs` harness) to the gateway alongside the existing `/crm/*` routes, and this recipe lands after that milestone, so a normal checkout deploys a gateway that serves both. The verification step detects which harnesses your checkout actually has — if `wiki-smoke.mjs` is missing (a checkout that predates the milestone), it reports an explicit SKIP for that line rather than failing. The dashboard is tolerant in the same direction: it feature-detects `/wiki` on the deployed gateway and shows a setup card instead of erroring if the gateway predates the routes.
+
 ## Expected Outcome
 
 A `--dry-run` prints the plan and exits. A live `wiki-crm` run ends like this (values abbreviated):
@@ -119,12 +121,12 @@ A `--dry-run` prints the plan and exits. A live `wiki-crm` run ends like this (v
   [ok]   4 function(s) deployed.
 
 == 4. Set secrets
-  [ok]   MCP_ACCESS_KEY set.
-  [ok]   OPENROUTER_API_KEY passed through.
+  [ok]   MCP_ACCESS_KEY, OPENROUTER_API_KEY set (one call, via temporary env file).
 
 == 5. Verify
   gateway /health         PASS  200 ok
   live-smoke.mjs          PASS  open-brain-rest smoke passed (cleaned 3 rows).
+  wiki-smoke.mjs          PASS  wiki smoke passed.
   wiki-profile /health    PASS  200 ok (worker live)
   crm-smoke.mjs           PASS  crm smoke passed (cleaned contact ...).
 
@@ -176,6 +178,8 @@ Running the command again is the supported way to add a surface or recover from 
 | `gateway /health` returns FAIL | Gateway not deployed, or `MCP_ACCESS_KEY` mismatch | Confirm `open-brain-rest` deployed. If you set your own `MCP_ACCESS_KEY`, make sure it matches the one used at verify time. See [`integrations/open-brain-rest`](../../integrations/open-brain-rest/README.md). |
 | `live-smoke.mjs` FAIL | Core surface issue (capture, search, browse) | Check the failing assertion in the smoke output. Semantic search and capture need `OPENROUTER_API_KEY` set on the gateway. See [`integrations/open-brain-rest`](../../integrations/open-brain-rest/README.md). |
 | `crm-smoke.mjs` FAIL | CRM routes or schemas missing | Confirm the `crm` or `wiki-crm` bundle ran and `crm-mcp` deployed. See [`schemas/crm-core`](../../schemas/crm-core/README.md) and [`schemas/crm-engagement`](../../schemas/crm-engagement/README.md). |
+| `wiki-smoke.mjs` FAIL | Wiki routes or schemas missing on the deployed gateway | Confirm `schemas/wiki-pages` applied and that the deployed `open-brain-rest` includes the `/wiki/*` route group (deploy from a checkout at or after the wiki milestone). See [`integrations/open-brain-rest`](../../integrations/open-brain-rest/README.md). |
+| `wiki-smoke.mjs` SKIP | Your checkout predates the wiki milestone, so the harness file is absent | Expected on merged main. Update your checkout (pull `main`) and re-run if you want the wiki surface exercised end to end. |
 | `wiki-profile /health` FAIL | Worker not deployed | Confirm the `wiki` or `wiki-crm` bundle ran. The worker needs `schemas/enhanced-thoughts` and `schemas/wiki-pages`. See [`integrations/consolidation-workers`](../../integrations/consolidation-workers/README.md). |
 | Wiki-profile runs but sections are empty | No LLM key, or too few thoughts yet | Set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) and capture some thoughts first, then regenerate from the dashboard. |
 

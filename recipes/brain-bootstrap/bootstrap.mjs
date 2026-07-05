@@ -669,7 +669,18 @@ function runSmoke(scriptRel, repoRoot, restUrl, accessKey) {
 const SMOKE_SCRIPTS = {
   live: "integrations/open-brain-rest/smoke/live-smoke.mjs",
   crm: "integrations/open-brain-rest/smoke/crm-smoke.mjs",
+  // Added to the repo by the wiki milestone (the same PR train that adds the
+  // /wiki/* route group to open-brain-rest). Detected by file existence at
+  // run time: present -> run it like the other smokes; absent (pre-milestone
+  // checkout) -> explicit SKIP with a reason, never a silent omission.
+  wiki: "integrations/open-brain-rest/smoke/wiki-smoke.mjs",
 };
+
+const WIKI_SMOKE_SKIP_REASON = "wiki-smoke.mjs not in this checkout — expected on merged main";
+
+function wikiSmokePresent(repoRoot) {
+  return fs.existsSync(path.join(repoRoot, SMOKE_SCRIPTS.wiki));
+}
 
 // ---------------------------------------------------------------------------
 // Plan printing (dry run) and rendering
@@ -715,8 +726,16 @@ function renderPlan(bundleName, bundle, projectRef, repoRoot, opts) {
     info("4. Verification:");
     info(`     - GET ${projectRef ? gatewayUrl(projectRef) : "<functions-url>/open-brain-rest"}/health`);
     bundle.smokes.forEach((smk) => {
-      if (smk === "wiki") info(`     - GET <functions-url>/wiki-profile/health  (worker liveness)`);
-      else info(`     - node ${SMOKE_SCRIPTS[smk]}`);
+      if (smk === "wiki") {
+        if (wikiSmokePresent(repoRoot)) {
+          info(`     - node ${SMOKE_SCRIPTS.wiki}`);
+        } else {
+          info(`     - wiki-smoke.mjs: SKIP (${WIKI_SMOKE_SKIP_REASON})`);
+        }
+        info(`     - GET <functions-url>/wiki-profile/health  (worker liveness)`);
+      } else {
+        info(`     - node ${SMOKE_SCRIPTS[smk]}`);
+      }
     });
   }
 
@@ -889,6 +908,16 @@ async function main() {
     if (health.ok) {
       for (const smk of bundle.smokes) {
         if (smk === "wiki") {
+          // The wiki milestone ships wiki-smoke.mjs alongside the /wiki/*
+          // route group on open-brain-rest. Run it when the checkout has it;
+          // on a pre-milestone checkout, report an explicit SKIP instead of
+          // silently omitting the surface.
+          if (wikiSmokePresent(repoRoot)) {
+            const r = runSmoke(SMOKE_SCRIPTS.wiki, repoRoot, restUrl, accessKey);
+            verdicts.push({ surface: "wiki-smoke.mjs", ...r });
+          } else {
+            verdicts.push({ surface: "wiki-smoke.mjs", ok: true, skip: true, detail: WIKI_SMOKE_SKIP_REASON });
+          }
           const wp = await checkWikiProfileHealth(wikiProfileHealthUrl(projectRef));
           verdicts.push({ surface: "wiki-profile /health", ...wp });
         } else {
@@ -952,7 +981,7 @@ function printVerdicts(verdicts) {
   log("");
   const width = Math.max(...verdicts.map((v) => v.surface.length), 20);
   for (const v of verdicts) {
-    const tag = v.ok ? "PASS" : "FAIL";
+    const tag = v.skip ? "SKIP" : v.ok ? "PASS" : "FAIL";
     log(`  ${v.surface.padEnd(width)}  ${tag}  ${v.detail}`);
   }
 }
