@@ -1,0 +1,20 @@
+{
+  "name": "Living Profile",
+  "description": "Self-updating, per-fact user profile synthesized from your whole brain, with provenance and supersession, in the style of Omi's Memories tab but not limited to one device's transcripts.",
+  "category": "recipes",
+  "author": {
+    "name": "Alan Shurafa",
+    "github": "alanshurafa"
+  },
+  "version": "1.0.0",
+  "requires": {
+    "open_brain": true,
+    "services": ["any Chat-Completions-compatible LLM API"],
+    "tools": ["Node.js 18+"]
+  },
+  "tags": ["profile", "memories", "synthesis", "provenance", "wiki"],
+  "difficulty": "intermediate",
+  "estimated_time": "45 minutes",
+  "created": "2026-07-03",
+  "updated": "2026-07-05"
+}
