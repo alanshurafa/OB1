@@ -49,7 +49,12 @@
           personal: compileGroup(raw.personal)
         }))
         .catch((error) => {
-          console.error('[Open Brain Capture] Falling back to empty sensitivity patterns', error);
+          // Do NOT cache the failure: a transient startup fetch error would
+          // otherwise disable the sensitivity gate (fail-open) for the whole
+          // service-worker lifetime. Returning EMPTY_PATTERNS covers only
+          // this call; the next call retries the load.
+          console.error('[Open Brain Capture] Sensitivity patterns failed to load — gate degraded for this call only, will retry', error);
+          compiledPatternsPromise = null;
           return EMPTY_PATTERNS;
         });
     }

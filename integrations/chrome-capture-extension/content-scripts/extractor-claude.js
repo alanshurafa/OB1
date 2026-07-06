@@ -18,7 +18,6 @@
   const TURN_SELECTORS = [
     '[data-testid^="conversation-turn-"]',
     '[data-testid*="conversation-turn"]',
-    'article[data-scroll-anchor]',
     '[class*="ConversationTurn"]',
     '[class*="message-row"]',
     '[class*="MessageRow"]'
@@ -100,10 +99,24 @@
     return Boolean(el?.matches?.(MESSAGE_BODY_SELECTOR));
   }
 
+  /**
+   * Keeps only the deepest matches: drops any element that contains
+   * another matched element. Broad class selectors can match an ancestor
+   * wrapping multiple turns, which would collapse the whole conversation
+   * into a single "turn".
+   */
+  function filterDeepestMatches(elements) {
+    return elements.filter(
+      (el) => !elements.some((other) => other !== el && el.contains(other))
+    );
+  }
+
   function findTurnContainers() {
     for (const selector of TURN_SELECTORS) {
       const turns = sortByDocumentOrder(
-        queryAllDeep(selector).filter((el) => !isWithinComposer(el) && getElementText(el))
+        filterDeepestMatches(
+          queryAllDeep(selector).filter((el) => !isWithinComposer(el) && getElementText(el))
+        )
       );
       if (turns.length > 0) {
         return turns;
@@ -115,8 +128,8 @@
 
   function classifyTurn(el) {
     const testId = el.getAttribute('data-testid') || '';
-    if (/human|user/i.test(testId)) return 'human';
-    if (/assistant|ai/i.test(testId)) return 'assistant';
+    if (/\b(human|user)\b/i.test(testId)) return 'human';
+    if (/\b(assistant|ai)\b/i.test(testId)) return 'assistant';
 
     const cls = el.className || '';
     if (/human|user-message/i.test(cls)) return 'human';

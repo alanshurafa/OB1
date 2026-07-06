@@ -228,6 +228,17 @@ input[type='password'] {
   color: #ef7d86;
 }
 
+.last-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #2a1417;
+  border-left: 4px solid #ef5d67;
+  color: #ef7d86;
+  font-size: 12px;
+  word-break: break-word;
+}
+
 .log-header {
   display: flex;
   align-items: center;

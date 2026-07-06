@@ -25,13 +25,27 @@
   };
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || typeof message.type !== 'string') {
+      return false;
+    }
     if (message.type !== 'EXTRACT_VISIBLE_RESPONSE') {
       return false;
     }
 
+    // The message channel can be gone by the time we respond (e.g. the
+    // popup closed while an async extractor was still running), in which
+    // case sendResponse throws. Swallow that — there is no one to answer.
+    const respond = (payload) => {
+      try {
+        sendResponse(payload);
+      } catch (err) {
+        console.warn('[Open Brain Bridge] sendResponse failed (channel closed?)', err);
+      }
+    };
+
     const extractorNames = Object.keys(extractors);
     if (extractorNames.length === 0) {
-      sendResponse({ ok: false, error: 'No extractor registered for this page' });
+      respond({ ok: false, error: 'No extractor registered for this page' });
       return false;
     }
 
@@ -43,14 +57,14 @@
 
       if (result && typeof result.then === 'function') {
         result
-          .then((capture) => sendResponse(capture))
-          .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
+          .then((capture) => respond(capture))
+          .catch((err) => respond({ ok: false, error: err.message || String(err) }));
         return true; // keep channel open for async
       }
 
-      sendResponse(result);
+      respond(result);
     } catch (err) {
-      sendResponse({ ok: false, error: err.message || String(err) });
+      respond({ ok: false, error: err.message || String(err) });
     }
 
     return false;

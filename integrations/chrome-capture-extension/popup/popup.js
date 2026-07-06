@@ -14,6 +14,7 @@
   const platformSummary = document.getElementById('platform-summary');
   const endpointSummary = document.getElementById('endpoint-summary');
   const captureLog = document.getElementById('capture-log');
+  const lastErrorLine = document.getElementById('last-error');
   const enabledChatgpt = document.getElementById('enabled-chatgpt');
   const enabledClaude = document.getElementById('enabled-claude');
   const enabledGemini = document.getElementById('enabled-gemini');
@@ -126,10 +127,29 @@
     setStatusDot(isConfigured, false);
   }
 
+  // Read-only error surfacing: render the latest session error (from
+  // GET_STATUS' sessionMetrics.lastError) into the overview status area.
+  // Pass a falsy value to clear/hide the line. Mirrors the EXO popup's
+  // last-error UX without touching any write/save path.
+  function renderLastError(lastError) {
+    if (!lastErrorLine) return;
+    const message = String(lastError || '');
+    if (message) {
+      lastErrorLine.textContent = message.length > 140 ? `${message.slice(0, 140)}…` : message;
+      lastErrorLine.title = message;
+      lastErrorLine.style.display = 'block';
+    } else {
+      lastErrorLine.textContent = '';
+      lastErrorLine.title = '';
+      lastErrorLine.style.display = 'none';
+    }
+  }
+
   async function loadStatus() {
     const status = await chrome.runtime.sendMessage({ type: 'GET_STATUS' });
     if (!status || !status.ok) {
       setStatusDot(false, true);
+      renderLastError('');
       return;
     }
 
@@ -142,11 +162,17 @@
     if (!status.configured) {
       configMissing.hidden = false;
       setStatusDot(false, false);
+      renderLastError('');
       return;
     }
 
     configMissing.hidden = true;
-    setStatusDot(true, Boolean(metrics.lastError));
+    const lastError = metrics.lastError || '';
+    setStatusDot(true, Boolean(lastError));
+    if (lastError) {
+      statusDot.title = String(lastError);
+    }
+    renderLastError(lastError);
   }
 
   async function loadActivityLog() {

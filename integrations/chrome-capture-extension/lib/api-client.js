@@ -2,6 +2,11 @@
   'use strict';
 
   const REQUEST_TIMEOUT_MS = 15000;
+  // Ingest runs server-side classification + embedding on full transcripts;
+  // 15s aborts healthy-but-slow requests and feeds the retry queue (the
+  // server keeps processing, so the client records a failure for content
+  // that actually landed). Give it a much longer leash.
+  const INGEST_TIMEOUT_MS = 120000;
 
   function parseErrorBody(text) {
     if (!text) return 'Unknown error';
@@ -22,24 +27,39 @@
 
     const baseUrl = global.OBConfig.buildRestBase(opts.endpoint);
     const url = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const timeoutMs = opts.timeoutMs || REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs || REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
-        method: opts.method || 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-brain-key': apiKey,
-          ...(opts.headers || {})
-        },
-        body: opts.body ? JSON.stringify(opts.body) : undefined,
-        signal: controller.signal
-      });
+      let response;
+      try {
+        response = await fetch(url, {
+          method: opts.method || 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-brain-key': apiKey,
+            ...(opts.headers || {})
+          },
+          body: opts.body ? JSON.stringify(opts.body) : undefined,
+          signal: controller.signal
+        });
+      } catch (err) {
+        // AbortError surfaces as an opaque "The user aborted a request";
+        // translate it so logs and the retry queue show the real cause.
+        if (err && err.name === 'AbortError') {
+          const timeoutError = new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s (${path})`);
+          timeoutError.isTimeout = true;
+          throw timeoutError;
+        }
+        throw err;
+      }
 
       const responseText = await response.text().catch(() => '');
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${parseErrorBody(responseText)}`);
+        const httpError = new Error(`HTTP ${response.status}: ${parseErrorBody(responseText)}`);
+        httpError.status = response.status;
+        throw httpError;
       }
 
       if (!responseText) {
@@ -69,7 +89,8 @@
       apiKey: options.apiKey,
       endpoint: options.endpoint,
       method: 'POST',
-      body: payload
+      body: payload,
+      timeoutMs: INGEST_TIMEOUT_MS
     });
   }
 
@@ -80,6 +101,7 @@
 
   global.OBApiClient = {
     REQUEST_TIMEOUT_MS,
+    INGEST_TIMEOUT_MS,
     apiFetch,
     healthCheck,
     ingestDocument
