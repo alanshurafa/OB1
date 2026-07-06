@@ -26,15 +26,32 @@
  * Usage:
  *   SUPABASE_ACCESS_TOKEN=sbp_... node bootstrap.mjs --project-ref abcd1234 --yes
  *   node bootstrap.mjs --project-ref abcd1234 --bundle wiki-crm --dry-run
+ *   node bootstrap.mjs --project-ref abcd1234 --disable crm --yes
+ *
+ * Surfaces:
+ *   Core is always applied. Wiki and CRM are independently toggleable surfaces,
+ *   BOTH ON BY DEFAULT, so a plain run with no surface flags installs the full
+ *   wiki-crm stack -- zero-setup first run. Opt out with --disable, or be
+ *   explicit with --enable / --bundle. See "Flags" below for precedence.
  *
  * Flags:
  *   --project-ref <ref>   Existing Supabase project ref (required unless --dry-run).
- *   --bundle <name>       core | wiki | crm | wiki-crm   (default: wiki-crm)
+ *   --bundle <name>       core | wiki | crm | wiki-crm. Explicit alias for a
+ *                         whole bundle; wins over --enable/--disable, which
+ *                         are rejected if given alongside --bundle.
+ *   --enable <list>       Comma-separated surfaces (wiki,crm) to enable.
+ *                         REPLACES the default set (so --enable crm = core+crm
+ *                         only). Mutually exclusive with --disable.
+ *   --disable <list>      Comma-separated surfaces (wiki,crm) to turn off from
+ *                         the default-on set. Mutually exclusive with --enable.
  *   --dry-run             Print the full plan; make no network calls.
  *   --skip-functions      Apply SQL + secrets but do not deploy Edge Functions.
  *   --skip-verify         Do not run the health check / smoke scripts.
  *   --yes                 Skip the confirmation prompt.
  *   --repo-root <path>    Override the repo checkout root (default: two levels up).
+ *
+ * Precedence (highest first): --bundle > --enable > default (wiki+crm both on,
+ * minus --disable).
  *
  * Env:
  *   SUPABASE_ACCESS_TOKEN   Management API personal access token (required
@@ -53,7 +70,6 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -278,6 +294,94 @@ const BUNDLES = {
 
 const LLM_KEYS = ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
 
+// Toggleable surfaces on top of core, and the default-on set (both on).
+const SURFACES = ["wiki", "crm"];
+const DEFAULT_SURFACES = new Set(SURFACES);
+
+// Surface set -> the BUNDLES key that already has the composed schemas /
+// functions / smokes in the correct dependency order. This is the whole
+// composition strategy: every legal combination of {wiki, crm} already exists
+// as a bundle (core, wiki, crm, wiki-crm), so "composing surfaces" is a lookup
+// into that table rather than a re-merge that could drift from the ordering
+// BUNDLES enforces. If a third surface is ever added, this map (and BUNDLES)
+// grows accordingly -- the lookup key is the sorted surface list.
+function bundleKeyForSurfaces(surfaces) {
+  const sorted = [...surfaces].sort();
+  if (sorted.length === 0) return "core";
+  if (sorted.length === 1 && sorted[0] === "wiki") return "wiki";
+  if (sorted.length === 1 && sorted[0] === "crm") return "crm";
+  if (sorted.length === 2) return "wiki-crm";
+  throw new Error(`No bundle composes surfaces: ${sorted.join(",")}`);
+}
+
+// Parse a comma list flag value ("wiki,crm") into a validated array of
+// surface names. Empty entries (from stray commas) are dropped. Unknown
+// tokens fail fast with the allowed list.
+function parseSurfaceList(raw, flagName) {
+  const tokens = raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) {
+    fail(`--${flagName} needs at least one surface (${SURFACES.join(", ")}).`);
+  }
+  for (const t of tokens) {
+    if (!SURFACES.includes(t)) {
+      fail(`Unknown surface '${t}' in --${flagName}. Choose from: ${SURFACES.join(", ")}.`);
+    }
+  }
+  return tokens;
+}
+
+// Resolve which surfaces are enabled, given the parsed flags. Precedence
+// (highest first): --bundle > --enable > default (both on) minus --disable.
+// --bundle is mutually exclusive with --enable/--disable; --enable and
+// --disable are mutually exclusive with each other. Returns
+// { bundleName, surfaces: Set<string> } where `surfaces` excludes core
+// (core is implicit and always applied).
+function resolveSurfaces(flags) {
+  const hasBundle = flags.bundle !== undefined;
+  const hasEnable = flags.enable !== undefined;
+  const hasDisable = flags.disable !== undefined;
+
+  if (hasEnable && hasDisable) {
+    fail("--enable and --disable are mutually exclusive. Pick one.");
+  }
+  if (hasBundle && (hasEnable || hasDisable)) {
+    fail("--bundle already selects a fixed surface set; it cannot be combined with --enable or --disable.");
+  }
+
+  if (hasBundle) {
+    const bundle = BUNDLES[flags.bundle];
+    if (!bundle) {
+      fail(`Unknown bundle '${flags.bundle}'. Choose one of: ${Object.keys(BUNDLES).join(", ")}.`);
+    }
+    const surfaces = new Set(SURFACES.filter((s) => flags.bundle === s || flags.bundle === "wiki-crm"));
+    return { bundleName: flags.bundle, surfaces };
+  }
+
+  if (hasEnable) {
+    const enabled = new Set(parseSurfaceList(flags.enable, "enable"));
+    return { bundleName: bundleKeyForSurfaces(enabled), surfaces: enabled };
+  }
+
+  // Default: both surfaces on, minus anything named in --disable.
+  const surfaces = new Set(DEFAULT_SURFACES);
+  if (hasDisable) {
+    for (const s of parseSurfaceList(flags.disable, "disable")) surfaces.delete(s);
+  }
+  return { bundleName: bundleKeyForSurfaces(surfaces), surfaces };
+}
+
+// Human-readable "Surfaces: Wiki (enabled), CRM (disabled)" line used in the
+// plan header and the finish block.
+function surfacesSummary(surfaces) {
+  return SURFACES.map((s) => {
+    const label = s === "wiki" ? "Wiki" : "CRM";
+    return `${label} (${surfaces.has(s) ? "enabled" : "disabled"})`;
+  }).join(", ");
+}
+
 // ---------------------------------------------------------------------------
 // Small pure helpers
 // ---------------------------------------------------------------------------
@@ -286,9 +390,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function parseArgs(argv) {
-  const flags = { bundle: "wiki-crm" };
+  const flags = {};
   const bools = new Set(["dry-run", "skip-functions", "skip-verify", "yes"]);
-  const values = new Set(["project-ref", "bundle", "repo-root"]);
+  const values = new Set(["project-ref", "bundle", "repo-root", "enable", "disable"]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
@@ -422,14 +526,29 @@ function fail(msg) {
 // Confirmation prompt
 // ---------------------------------------------------------------------------
 
+// Single confirmation prompt, default Yes on empty input or EOF. Only ever
+// called when stdout is a TTY (see shouldPrompt) -- callers must not invoke
+// this on a non-TTY stream, since reading stdin there can hang forever.
 async function confirm(question) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await new Promise((resolve) => rl.question(`${question} [y/N] `, resolve));
-    return /^y(es)?$/i.test(answer.trim());
-  } finally {
-    rl.close();
-  }
+  process.stdout.write(`${question} [Y/n] `);
+  return new Promise((resolve) => {
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+    process.stdin.once("data", (chunk) => {
+      process.stdin.pause();
+      const answer = String(chunk).trim();
+      resolve(answer === "" || /^y(es)?$/i.test(answer));
+    });
+    process.stdin.once("end", () => resolve(true));
+  });
+}
+
+// Whether to show the interactive confirmation prompt: only when stdout is a
+// TTY (a human is watching) and the run isn't already unattended-safe via
+// --yes. --dry-run never reaches this (it returns before main's confirm
+// call), so it is not part of this check.
+function shouldPrompt(flags) {
+  return Boolean(process.stdout.isTTY) && !flags.yes;
 }
 
 // ---------------------------------------------------------------------------
@@ -686,8 +805,9 @@ function wikiSmokePresent(repoRoot) {
 // Plan printing (dry run) and rendering
 // ---------------------------------------------------------------------------
 
-function renderPlan(bundleName, bundle, projectRef, repoRoot, opts) {
+function renderPlan(bundleName, bundle, surfaces, projectRef, repoRoot, opts) {
   step(`Execution plan (bundle: ${bundleName})`);
+  info(`Surfaces      : ${surfacesSummary(surfaces)}`);
   info(`Repo checkout : ${repoRoot}`);
   info(`Project ref   : ${projectRef || "(none — dry run)"}`);
   info(`Functions URL : ${projectRef ? functionsBaseUrl(projectRef) : "(set once project ref is known)"}`);
@@ -758,7 +878,7 @@ function safeSize(abs) {
 async function main() {
   const flags = parseArgs(process.argv.slice(2));
 
-  const bundleName = flags.bundle;
+  const { bundleName, surfaces } = resolveSurfaces(flags);
   const bundle = BUNDLES[bundleName];
   if (!bundle) {
     fail(`Unknown bundle '${bundleName}'. Choose one of: ${Object.keys(BUNDLES).join(", ")}.`);
@@ -771,9 +891,9 @@ async function main() {
   log("Open Brain :: brain-bootstrap");
   log("=============================");
 
-  // Dry run: render the plan and stop before any network call.
+  // Dry run: render the plan and stop before any network call. Never prompts.
   if (dryRun) {
-    renderPlan(bundleName, bundle, projectRef, repoRoot, flags);
+    renderPlan(bundleName, bundle, surfaces, projectRef, repoRoot, flags);
     step("Dry run complete");
     info("No network calls were made. Re-run without --dry-run to apply.");
     info("The first live run is how this recipe self-verifies (health + smoke).");
@@ -802,11 +922,12 @@ async function main() {
   const generatedAccessKey = !accessKey;
   if (generatedAccessKey) accessKey = generateKey();
 
-  // Render the plan, then confirm.
-  renderPlan(bundleName, bundle, projectRef, repoRoot, flags);
-  if (!flags.yes) {
+  // Render the plan, then confirm -- but only interactively, on a real TTY.
+  // Non-TTY (CI, piped) or --yes always proceeds without prompting.
+  renderPlan(bundleName, bundle, surfaces, projectRef, repoRoot, flags);
+  if (shouldPrompt(flags)) {
     log("");
-    const proceed = await confirm("Apply this to the project above?");
+    const proceed = await confirm("Proceed?");
     if (!proceed) {
       log("Aborted. Nothing was changed.");
       return;
@@ -944,9 +1065,28 @@ async function main() {
   log("  Dashboard environment (open-brain-dashboard-pro):");
   log(`    NEXT_PUBLIC_API_URL=${restUrl}`);
   log(`    SESSION_SECRET=${sessionSecret}`);
-  if (bundleName === "wiki" || bundleName === "wiki-crm") {
+  if (surfaces.has("wiki")) {
     log(`    # optional (auto-derived from API URL if unset):`);
     log(`    WIKI_PROFILE_URL=${functionsBaseUrl(projectRef)}/wiki-profile`);
+  }
+
+  // Any surface not enabled this run gets an actionable re-enable hint, tied
+  // to the dashboard's existing "Re-check now" feature-detection flow.
+  for (const s of SURFACES) {
+    if (surfaces.has(s)) continue;
+    if (s === "wiki") {
+      log("");
+      log(
+        `  Wiki not enabled — re-run with --enable wiki (or apply schemas/entity-extraction + ` +
+          `typed-reasoning-edges + wiki-pages and click "Re-check now" in the dashboard).`,
+      );
+    } else if (s === "crm") {
+      log("");
+      log(
+        `  CRM not enabled — re-run with --enable crm (or apply schemas/crm-core + ` +
+          `crm-engagement and click "Re-check now" in the dashboard).`,
+      );
+    }
   }
 
   if (generatedAccessKey) {
