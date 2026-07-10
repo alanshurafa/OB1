@@ -70,17 +70,47 @@ Pick the surface you want with `--bundle`:
 | `crm` | core stack + crm-core, crm-engagement | open-brain-rest, crm-mcp | live-smoke, crm-smoke |
 | `wiki-crm` (default) | all of the above | open-brain-rest, wiki-mcp, crm-mcp, wiki-profile | live-smoke, wiki-smoke, wiki-profile health, crm-smoke |
 
+### Enable or Disable Surfaces at Install
+
+Everything is enabled by default — a plain run with no surface flags installs the full `wiki-crm` bundle, both the Wiki and CRM surfaces on, zero setup required. If you only want part of the stack, opt out at install time:
+
+```bash
+# Core + Wiki only, no CRM
+node bootstrap.mjs --project-ref YOUR_PROJECT_REF --disable crm --yes
+
+# Core only, neither surface
+node bootstrap.mjs --project-ref YOUR_PROJECT_REF --disable wiki,crm --yes
+```
+
+Or be explicit about exactly what you want with `--enable` (this replaces the default rather than subtracting from it) or `--bundle` (the table above, unchanged):
+
+```bash
+# Core + CRM only, explicitly
+node bootstrap.mjs --project-ref YOUR_PROJECT_REF --enable crm --yes
+
+# Same result via --bundle
+node bootstrap.mjs --project-ref YOUR_PROJECT_REF --bundle crm --yes
+```
+
+`--bundle` wins if given; `--enable` and `--disable` are mutually exclusive with each other and with `--bundle` (the script errors rather than silently combining them).
+
+Anything you don't enable now is not gone for good. Re-run the installer later with `--enable wiki` (or `--enable crm`, or drop back to the default) — it's idempotent, so already-applied schemas and deployed functions no-op. Or apply the surface's schema files by hand and click **Re-check now** in the dashboard, which feature-detects what the gateway supports.
+
 ### Flags
 
 | Flag | Effect |
 |------|--------|
 | `--project-ref <ref>` | Target project ref. Required for a live run. |
-| `--bundle <name>` | `core`, `wiki`, `crm`, or `wiki-crm` (default). |
-| `--dry-run` | Print the full plan (ordered schemas, functions, secrets, verification) and make no network calls. |
+| `--bundle <name>` | `core`, `wiki`, `crm`, or `wiki-crm`. Explicit alias for a whole bundle; wins over `--enable`/`--disable`, which the script rejects if given alongside `--bundle`. |
+| `--enable <list>` | Comma-separated surfaces (`wiki`, `crm`) to enable. Replaces the default set — `--enable crm` means core + CRM only. Mutually exclusive with `--disable`. |
+| `--disable <list>` | Comma-separated surfaces (`wiki`, `crm`) to turn off from the default-on set. Mutually exclusive with `--enable`. |
+| `--dry-run` | Print the full plan (surfaces, ordered schemas, functions, secrets, verification) and make no network calls. |
 | `--skip-functions` | Apply SQL only. Skips the CLI deploy and secrets. |
 | `--skip-verify` | Do not run the health check or smoke scripts. |
 | `--yes` | Skip the confirmation prompt. |
 | `--repo-root <path>` | Override the checkout root if you run the script from outside `recipes/brain-bootstrap/`. |
+
+Precedence, highest first: `--bundle` > `--enable` > default (both surfaces on, minus `--disable`). The confirmation prompt only appears when stdout is a TTY and neither `--dry-run` nor `--yes` is set — CI and piped runs proceed without prompting.
 
 ## What Gets Applied, and Why the Order
 
@@ -106,6 +136,9 @@ The installer always deploys whatever version of each function is in your checko
 A `--dry-run` prints the plan and exits. A live `wiki-crm` run ends like this (values abbreviated):
 
 ```text
+== Execution plan (bundle: wiki-crm)
+  Surfaces      : Wiki (enabled), CRM (enabled)
+
 == 2. Apply SQL schemas
   applying core setup ... ok
   applying workflow-status ... ok
