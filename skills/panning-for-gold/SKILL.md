@@ -29,7 +29,7 @@ These rules exist because they've been violated and caused wasted work:
 
 2. **SUMMARIES FIRST, TRANSCRIPT SECOND.** If a summary/notes file exists alongside a transcript, use the summary as the primary extraction source. Only read the full transcript for: (a) exact quotes to support threads, (b) verifying completeness on the second pass. This saves 10-20K tokens per scan.
 
-3. **EVALUATORS WRITE TO FILES.** Every background evaluator agent MUST write its evaluation to a permanent file (e.g., `docs/meetings/evaluations/YYYY-MM-DD-{slug}.md`) as part of its task. Do not depend on collecting agent return values.
+3. **EVALUATORS WRITE TO FILES.** Every background evaluator agent must write its evaluation to a permanent file (e.g., `docs/meetings/evaluations/YYYY-MM-DD-{slug}.md`) as part of its task. Do not depend on collecting agent return values.
 
 4. **SYNTHESIS HAPPENS INLINE.** Do not dispatch a separate agent for synthesis. Write the gold-found file yourself after evaluators finish. If evaluators disappear (compaction, task ID loss), write the synthesis from your own reading.
 
@@ -112,7 +112,7 @@ Sample 2-3 lines from each label
 Compare: expected speakers vs. actual labels
 ```
 
-If `number_of_labels > (expected_speakers * 2)`, the labels are fragmented and CANNOT be trusted for attribution. Flag this immediately.
+If `number_of_labels > (expected_speakers * 2)`, the labels are fragmented and cannot be trusted for attribution. Flag this immediately.
 
 #### Step 3: Build Anchor Lines
 
@@ -201,7 +201,7 @@ NOT every thread needs a full evaluation agent. Categorize threads:
 
 1. **Inline evaluation (preferred for 1-3 threads):** Write the evaluation yourself in the gold-found file. Fastest, no agent overhead, no risk of lost work.
 2. **Background agents (for 4+ ACT NOW threads):** Dispatch agents BUT require them to write to permanent files.
-3. **NEVER dispatch more than 5 background evaluators.** If you have more than 5 ACT NOW candidates, you miscategorized. Re-triage.
+3. **Never dispatch more than 5 background evaluators.** If you have more than 5 ACT NOW candidates, you miscategorized. Re-triage.
 
 ### Per-Idea Evaluation Template
 
@@ -234,7 +234,7 @@ Be honest. Don't inflate value. Don't dismiss things as "someday" just because t
 ### Agent Configuration
 
 - Use `run_in_background: true` for all evaluators
-- **Every evaluator MUST include instructions to write output to a permanent file**
+- **Every evaluator must include instructions to write output to a permanent file**
 - Use Opus (`model: opus`) for ideas that connect to SHIP projects or involve strategic decisions
 - Use Sonnet for lower-stakes research (hardware, consumer products, wellness)
 - Use Haiku for quick feasibility checks (does an API exist? is this legal?)
@@ -353,5 +353,5 @@ If any lesson is learned, update this skill file directly. The skill improves wi
 6. **Not saving intermediate work.** Every output (inventory, evaluations, synthesis) gets a permanent file. If it's not on disk, it doesn't exist.
 7. **Re-reading the whole transcript for one quote.** Use Grep. It's 100x cheaper.
 8. **Dispatching agents and hoping they return.** Agents are unreliable across compaction boundaries. For critical synthesis, do it inline.
-9. **Trusting auto-generated speaker labels.** Voice transcription software creates 3-5x more speaker labels than actual speakers. Labels shift with environment changes. NEVER use speaker numbers as ground truth, always verify with anchor phrases and conversational context.
+9. **Trusting auto-generated speaker labels.** Voice transcription software creates 3-5x more speaker labels than actual speakers. Labels shift with environment changes. Never use speaker numbers as ground truth, always verify with anchor phrases and conversational context.
 10. **Being stingy on first extraction.** Default to over-extraction (80+ threads for a 1-hour conversation is normal). Phase 2 triage handles prioritization. Phase 1's job is completeness, not curation. If your first pass has fewer than 40 threads for a 30+ minute multi-topic conversation, you're collapsing or skipping.

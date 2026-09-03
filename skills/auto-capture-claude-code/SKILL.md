@@ -5,7 +5,7 @@ description: |
   automatic session-end hooks that capture transcripts to Open Brain without
   manual intervention. Use this when you want every meaningful Claude Code
   session to be preserved automatically — not just the ones where you
-  remember to say "wrap up".
+ Say "wrap up".
 author: Alan Shurafa
 version: 1.0.0
 requires_skills:
