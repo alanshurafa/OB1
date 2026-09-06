@@ -23,32 +23,32 @@ Never built an Open Brain? Start here:
 
 ## Recent Contributions
 
-The 20 most recent merged PRs. This list is generated from GitHub and refreshes daily. Last updated: 2026-05-22.
+The 20 most recent merged PRs. This list is generated from GitHub and refreshes daily. Last updated: 2026-09-06.
 
 <!-- recent-contributions:start -->
 
 | Contribution | What changed | Creator |
 | ------------ | ------------ | ------- |
-| [Provenance chains — derivation tracking](recipes/provenance-chains/) | Provenance chains — derivation tracking. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Open Brain Dashboard Pro — Next.js 16 + iron-session](dashboards/open-brain-dashboard-pro/) | Open Brain Dashboard Pro — Next.js 16 + iron-session. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Atomizer — generic + Gmail re-atomization toolkit](recipes/atomizer/) | Atomizer — generic + Gmail re-atomization toolkit. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Brain smoke test — install verification harness](recipes/brain-smoke-test/) | Brain smoke test — install verification harness. | [@alanshurafa](https://github.com/alanshurafa) |
-| [CRM improvements: crm_ prefix, FTS search, meeting prep, stale detection](extensions/professional-crm/) | CRM improvements: crm_ prefix, FTS search, meeting prep, stale detection. | [@pintomatic](https://github.com/pintomatic) |
-| [Edge function cost optimization — 73% invocation reduction](recipes/edge-function-cost-optimization/) | Edge function cost optimization — 73% invocation reduction. | [@JustinTSmith](https://github.com/JustinTSmith) |
-| [Obsidian-vault-import: --source-label to override metadata.source](recipes/obsidian-vault-import/) | Obsidian-vault-import: --source-label to override metadata.source. | [@dhanjit](https://github.com/dhanjit) |
-| [Preserve full frontmatter in obsidian-vault-import metadata](recipes/obsidian-vault-import/) | Preserves full frontmatter in obsidian-vault-import metadata. | [@dhanjit](https://github.com/dhanjit) |
-| [Load .env into wiki-compiler child processes](recipes/wiki-compiler/) | Loads .env into wiki-compiler child processes. | [@mlava](https://github.com/mlava) |
-| [Enable standalone output for Docker builds](dashboards/open-brain-dashboard-next/) | Enables standalone output for Docker builds. | [@Mavrick-F](https://github.com/Mavrick-F) |
-| [Fix outdated primitives section in README](README.md) | Fixes outdated primitives section in README. | [@jjshanks](https://github.com/jjshanks) |
-| [Document Edge Function redeploy step in OpenRouter rotation FAQ](docs/03-faq.md) | Documents Edge Function redeploy step in OpenRouter rotation FAQ. | [@Silverhawk-bit](https://github.com/Silverhawk-bit) |
-| [Return JSON-RPC error envelopes on auth failure](server/index.ts) | Returns JSON-RPC error envelopes on auth failure. | [@txcfi-scott](https://github.com/txcfi-scott) |
-| [Markdownlint sweep for existing recipe/schema docs](schemas/workflow-status/) | Markdownlint sweep for existing recipe/schema docs. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Improve ChatGPT MCP compatibility](primitives/remote-mcp/) | Improves ChatGPT MCP compatibility. | [@justfinethanku](https://github.com/justfinethanku) |
-| [Add wiki compiler orchestration recipe](recipes/wiki-compiler/) | Adds wiki compiler orchestration recipe. | [@justfinethanku](https://github.com/justfinethanku) |
-| [Wiki synthesis + autobiography pipeline](recipes/wiki-synthesis/) | Wiki synthesis + autobiography pipeline. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Entity wiki pages from knowledge graph](recipes/entity-wiki/) | Entity wiki pages from knowledge graph. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Typed reasoning edges + Opus/Haiku classifier](schemas/typed-reasoning-edges/) | Typed reasoning edges + Opus/Haiku classifier. | [@alanshurafa](https://github.com/alanshurafa) |
-| [Entity extraction worker](integrations/entity-extraction-worker/) | Entity extraction worker. | [@alanshurafa](https://github.com/alanshurafa) |
+| [REST API gateway](dashboards/open-brain-dashboard-next/) | REST API gateway. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Enhanced MCP server with alpha tool suite](dashboards/open-brain-dashboard-next/) | Enhanced MCP server with alpha tool suite. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Link wiki evidence chips to thought pages](dashboards/open-brain-dashboard-pro/) | Link wiki evidence chips to thought pages. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Pro dashboard: handle UUID thought ids](dashboards/open-brain-dashboard-pro/) | Pro dashboard: handle UUID thought ids. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Add brain-bootstrap one-command installer](recipes/brain-bootstrap/) | Adds brain-bootstrap one-command installer. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Wiki-profile consolidation worker + regenerate flow](integrations/consolidation-workers/) | Wiki-profile consolidation worker + regenerate flow. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Default-visible CRM + wiki nav with setup states](dashboards/open-brain-dashboard-pro/) | Default-visible CRM + wiki nav with setup states. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Wiki surface in dashboard-pro](dashboards/open-brain-dashboard-pro/) | Wiki surface in dashboard-pro. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Add /wiki routes to open-brain-rest](integrations/open-brain-rest/) | Adds /wiki routes to open-brain-rest. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Add wiki_reject_pending RPC to wiki-pages](schemas/wiki-pages/) | Adds wiki_reject_pending RPC to wiki-pages. | [@alanshurafa](https://github.com/alanshurafa) |
+| [CRM UI for Dashboard Pro + crm-quick-start recipe (Phases 4 & 6)](dashboards/open-brain-dashboard-pro/) | CRM UI for Dashboard Pro + crm-quick-start recipe (Phases 4 & 6). | [@alanshurafa](https://github.com/alanshurafa) |
+| [CRM REST routes + card write-back for open-brain-rest](integrations/open-brain-rest/) | CRM REST routes + card write-back for open-brain-rest. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Add card_thought_id anchor to crm_contacts](schemas/crm-core/) | Adds card_thought_id anchor to crm_contacts. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Fix Gemini sync completion + Kanban drop-target bugs](integrations/chrome-capture-extension/) | Fixes Gemini sync completion + Kanban drop-target bugs. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Chrome extension — Gemini bulk history sync (Phase B/C)](dashboards/open-brain-dashboard-next/) | Chrome extension — Gemini bulk history sync (Phase B/C). | [@alanshurafa](https://github.com/alanshurafa) |
+| [CRM MCP tools](integrations/crm-mcp/) | CRM MCP tools. | [@alanshurafa](https://github.com/alanshurafa) |
+| [CRM engagement: notes, tasks, dates, interactions](schemas/crm-engagement/) | CRM engagement: notes, tasks, dates, interactions. | [@alanshurafa](https://github.com/alanshurafa) |
+| [CRM core: editable contacts + field-proposal truth layer](schemas/crm-core/) | CRM core: editable contacts + field-proposal truth layer. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Wiki MCP tools](integrations/wiki-mcp/) | Wiki MCP tools. | [@alanshurafa](https://github.com/alanshurafa) |
+| [Smart-ingest: handle UUID thought/job ids](integrations/smart-ingest/) | Smart-ingest: handle UUID thought/job ids. | [@alanshurafa](https://github.com/alanshurafa) |
 
 <!-- recent-contributions:end -->
 
