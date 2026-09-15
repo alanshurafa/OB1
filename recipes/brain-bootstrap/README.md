@@ -145,7 +145,7 @@ A `--dry-run` prints the plan and exits. A live `wiki-crm` run ends like this (v
 The script exits non-zero if any surface fails, so it is safe to gate a setup script on it. The `MCP_ACCESS_KEY` and `SESSION_SECRET` are printed once — save them before you close the terminal.
 
 > [!IMPORTANT]
-> The first live run is what proves the install end to end. This recipe was authored and verified with `--dry-run` against the checked-out schemas and functions; a live Supabase project is what the smoke step exercises. If you are the first to run it live and a smoke check fails, the failing line names the surface and the [troubleshooting](#troubleshooting) table maps it to the README that owns it.
+> This recipe has been run end to end against a live Supabase project: the schemas apply in order, all four functions deploy, and the health and smoke checks pass. If a smoke check fails on your run, the failing line names the surface and the [troubleshooting](#troubleshooting) table maps it to the README that owns it.
 
 ## Deploy the Dashboard to Vercel
 
